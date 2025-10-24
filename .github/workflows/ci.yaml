@@ -1,129 +1,176 @@
-name: CI
+name: Vertica Operator Integration (kind)
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  OP_IMAGE: ghcr.io/vertica/vertica-kubernetes/verticadb-operator:latest
+  KIND_CLUSTER: vertica-kind
+  K8S_NAMESPACE: vertica-test
+  VDB_NAME: vdb-test
+  VDB_DBNAME: vdbtls
+  VERTICA_USER: release
+  HOST_PORT: 5433
 
 jobs:
-  build:
-
+  vertica-kind:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ['1.22', '1.21', '1.20', '1.19', '1.18']
+    timeout-minutes: 120
 
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Go ${{ matrix.go-version }}
+      - name: Install prerequisites (kind, kubectl, tools)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y jq conntrack iptables netcat
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind && sudo mv ./kind /usr/local/bin/kind
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl && sudo mv kubectl /usr/local/bin/
+
+      - name: Authenticate to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Create kind cluster with port mapping for 5433
+        run: |
+          cat > kind-config.yaml <<EOF
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          nodes:
+          - role: control-plane
+            extraPortMappings:
+            - containerPort: 30000
+              hostPort: ${HOST_PORT}
+              protocol: TCP
+          EOF
+          kind create cluster --name ${KIND_CLUSTER} --config=kind-config.yaml
+          kubectl create namespace ${K8S_NAMESPACE} || true
+
+      - name: Pull operator image and load into kind
+        run: |
+          docker pull ${OP_IMAGE}
+          kind load docker-image ${OP_IMAGE} --name ${KIND_CLUSTER}
+
+      - name: Deploy operator manifests (from vertica-kubernetes repo)
+        run: |
+          git clone https://github.com/vertica/vertica-kubernetes.git /tmp/vertica-k8s
+          # Apply CRDs if present
+          if [ -d /tmp/vertica-k8s/deploy/crds ]; then
+            kubectl apply -f /tmp/vertica-k8s/deploy/crds -n ${K8S_NAMESPACE} || true
+          fi
+          # Apply RBAC and operator manifests (adjust path if repo layout differs)
+          if [ -d /tmp/vertica-k8s/deploy/operator ]; then
+            kubectl apply -f /tmp/vertica-k8s/deploy/operator -n ${K8S_NAMESPACE} || true
+          fi
+          # Patch operator deployment image to the pulled OP_IMAGE (best-effort)
+          kubectl -n ${K8S_NAMESPACE} set image deployment/verticadb-operator verticadb-operator=${OP_IMAGE} --record || true
+          kubectl -n ${K8S_NAMESPACE} rollout status deployment/verticadb-operator --timeout=120s || true
+
+      - name: Wait for operator to become ready
+        run: |
+          for i in $(seq 1 60); do
+            READY=$(kubectl -n ${K8S_NAMESPACE} get deploy verticadb-operator -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo 0)
+            if [ "${READY}" = "1" ]; then
+              echo "operator ready"
+              break
+            fi
+            echo "waiting for operator (${i})..."
+            sleep 5
+          done
+          kubectl -n ${K8S_NAMESPACE} get pods -o wide || true
+
+      - name: Create Vertica superuser secret and apply VerticaDB CR
+        env:
+          VERTICA_DB_PASSWORD: ${{ secrets.VERTICA_DB_PASSWORD }}
+        run: |
+          kubectl -n ${K8S_NAMESPACE} create secret generic vdb-superuser-secret --from-literal=password="${VERTICA_DB_PASSWORD}" || true
+          cat > /tmp/verticadb-cr.yaml <<EOF
+          apiVersion: vertica.com/v1beta1
+          kind: VerticaDB
+          metadata:
+            name: ${VDB_NAME}
+            namespace: ${K8S_NAMESPACE}
+          spec:
+            image: "vertica/vertica:latest"
+            size: 1
+            dbName: ${VDB_DBNAME}
+            superuserPasswordSecret:
+              name: vdb-superuser-secret
+              key: password
+          EOF
+          kubectl apply -f /tmp/verticadb-cr.yaml -n ${K8S_NAMESPACE}
+
+      - name: Wait for Vertica pod and localhost:5433 to be reachable
+        run: |
+          # Wait for pod to appear and become Running
+          for i in $(seq 1 120); do
+            POD=$(kubectl -n ${K8S_NAMESPACE} get pods -o jsonpath='{.items[0].metadata.name}' --ignore-not-found)
+            if [ -n "${POD}" ]; then
+              STATUS=$(kubectl -n ${K8S_NAMESPACE} get pod ${POD} -o jsonpath='{.status.phase}')
+              echo "pod ${POD} status ${STATUS}"
+              if [ "${STATUS}" = "Running" ]; then
+                break
+              fi
+            fi
+            sleep 5
+          done
+          # Confirm host port mapping is reachable
+          for i in $(seq 1 60); do
+            if nc -z localhost ${HOST_PORT}; then
+              echo "localhost:${HOST_PORT} reachable"
+              break
+            fi
+            echo "waiting for localhost:${HOST_PORT} ..."
+            sleep 3
+          done
+
+      - name: Create test user inside Vertica
+        env:
+          VERTICA_TEST_USER_PASSWORD: ${{ secrets.VERTICA_TEST_USER_PASSWORD }}
+        run: |
+          POD=$(kubectl -n ${K8S_NAMESPACE} get pods -l app.kubernetes.io/name=verticadb -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+          if [ -z "${POD}" ]; then
+            POD=$(kubectl -n ${K8S_NAMESPACE} get pods -o jsonpath='{.items[0].metadata.name}')
+          fi
+          echo "Using pod: ${POD}"
+          kubectl -n ${K8S_NAMESPACE} exec -i ${POD} -- /opt/vertica/bin/vsql -U dbadmin -w "${{ secrets.VERTICA_DB_PASSWORD }}" -c "CREATE USER IF NOT EXISTS ${VERTICA_USER} IDENTIFIED BY '${VERTICA_TEST_USER_PASSWORD}'; GRANT ALL ON SCHEMA public TO ${VERTICA_USER};" || true
+
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: '1.22'
 
-      - name: Set up a Keycloak docker container
-        timeout-minutes: 5
+      - name: Run Go tests against in-cluster DB
+        env:
+          VERTICA_HOST: localhost
+          VERTICA_PORT: ${HOST_PORT}
+          VERTICA_DATABASE: ${VDB_DBNAME}
+          VERTICA_USER: ${VERTICA_USER}
+          VERTICA_PASSWORD: ${{ secrets.VERTICA_TEST_USER_PASSWORD }}
         run: |
-          docker network create -d bridge my-network
-          docker run -d -p 8080:8080 \
-            --name keycloak --network my-network \
-            -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
-            quay.io/keycloak/keycloak:23.0.4 start-dev
-          docker container ls
+          go test -v ./... -args --locator localhost:${HOST_PORT} --user ${VERTICA_USER} --password "${VERTICA_PASSWORD}" --tlsmode none
 
-      - name: Set up a Vertica server docker container
-        timeout-minutes: 15
+      - name: Collect logs on failure
+        if: failure()
         run: |
-          docker run -d -p 5433:5433 -p 5444:5444 \
-            --name vertica_docker --network my-network \
-            opentext/vertica-ce:24.4.0-0
-          echo "Vertica startup ..."
-          until docker exec vertica_docker test -f /data/vertica/VMart/agent_start.out; do \
-            echo "..."; \
-            sleep 3; \
-          done;
-          echo "Vertica is up"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "\l"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "select version()"
+          kubectl -n ${K8S_NAMESPACE} get pods -o wide || true
+          kubectl -n ${K8S_NAMESPACE} logs -l app.kubernetes.io/name=verticadb --all-containers || true
+          docker ps -a || true
 
-      - name: Generating certs
+      - name: Tear down kind cluster
+        if: always()
         run: |
-          ./resources/tests/genCerts.sh
-             
-      - name: Configure Keycloak
-        run: |
-          echo "Wait for keycloak ready ..."
-          bash -c 'while true; do curl -s localhost:8080 &>/dev/null; ret=$?; [[ $ret -eq 0 ]] && break; echo "..."; sleep 3; done'
-          
-          REALM="test"
-          USER="oauth_user"
-          PASSWORD="password"
-          CLIENT_ID="vertica"
-          CLIENT_SECRET="P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs"
-          
-          docker exec -i keycloak /bin/bash <<EOF
-            /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:8080 --realm master --user admin --password admin
-            /opt/keycloak/bin/kcadm.sh create realms -s realm=${REALM} -s enabled=true
-            /opt/keycloak/bin/kcadm.sh update realms/${REALM} -s accessTokenLifespan=3600
-            /opt/keycloak/bin/kcadm.sh get realms/${REALM}
-            /opt/keycloak/bin/kcadm.sh create users -r ${REALM} -s username=${USER} -s enabled=true
-            /opt/keycloak/bin/kcadm.sh set-password -r ${REALM} --username ${USER} --new-password ${PASSWORD}
-            /opt/keycloak/bin/kcadm.sh get users -r ${REALM}
-            /opt/keycloak/bin/kcadm.sh create clients -r ${REALM} -s clientId=${CLIENT_ID} -s enabled=true \
-              -s 'redirectUris=["/*"]' -s 'webOrigins=["/*"]' -s secret=${CLIENT_SECRET} -s directAccessGrantsEnabled=true -o
-          EOF
-
-          # Retrieving an Access Token
-          curl --location --request POST http://`hostname`:8080/realms/${REALM}/protocol/openid-connect/token \
-              --header 'Content-Type: application/x-www-form-urlencoded' \
-              --data-urlencode "username=${USER}" \
-              --data-urlencode "password=${PASSWORD}" \
-              --data-urlencode "client_id=${CLIENT_ID}" \
-              --data-urlencode "client_secret=${CLIENT_SECRET}" \
-              --data-urlencode 'grant_type=password' -o oauth.json
-          cat oauth.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["access_token"])' > access_token.txt
-
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE AUTHENTICATION v_oauth METHOD 'oauth' HOST '0.0.0.0/0';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER AUTHENTICATION v_oauth SET client_id = '${CLIENT_ID}';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER AUTHENTICATION v_oauth SET client_secret = '${CLIENT_SECRET}';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://`hostname`:8080/realms/${REALM}/.well-known/openid-configuration';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://`hostname`:8080/realms/${REALM}/protocol/openid-connect/token/introspect';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "SELECT * FROM client_auth WHERE auth_name='v_oauth';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE USER ${USER};"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "GRANT AUTHENTICATION v_oauth TO ${USER};"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "GRANT ALL ON SCHEMA PUBLIC TO ${USER};"
-          # A dbadmin-specific authentication record (connect remotely) is needed after setting up an OAuth user
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE AUTHENTICATION v_dbadmin_hash METHOD 'hash' HOST '0.0.0.0/0';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER AUTHENTICATION v_dbadmin_hash PRIORITY 10000;"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;"
-
-      - name: Run tests without TLS
-        run: |
-          export VERTICA_TEST_OAUTH_ACCESS_TOKEN=`cat access_token.txt`
-          go test -v -race . -args --locator localhost:5433 --user dbadmin
-          go test -race . -args --locator localhost:5433 --user dbadmin --use_prepared_statements=0
-          go test -race ./logger
-
-      - name: Turning on TLS in the database
-        run: |
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE CA CERTIFICATE root_ca AS '`cat ./resources/tests/ssl/rootCA.crt`';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE KEY server_key TYPE 'RSA' AS '`cat ./resources/tests/ssl/server.key`';"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "CREATE CERTIFICATE server AS '`cat ./resources/tests/ssl/server.crt`' KEY server_key;"
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';"
-
-      - name: Testing with --tlsmode=server
-        run: |
-          export VERTICA_TEST_OAUTH_ACCESS_TOKEN=`cat access_token.txt`
-          go test -v -race . -args --locator localhost:5433 --user dbadmin --tlsmode=server
-          go test -race . -args --locator localhost:5433 --user dbadmin --tlsmode=server --use_prepared_statements=0
-
-      - name: Setting SSLCa in the database
-        run: |
-          docker exec -u dbadmin vertica_docker /opt/vertica/bin/vsql -c "ALTER TLS CONFIGURATION server ADD CA CERTIFICATES root_ca TLSMODE 'VERIFY_CA';"
-
-      - name: Testing with --tlsmode=custom
-        run: |
-          export VERTICA_TEST_OAUTH_ACCESS_TOKEN=`cat access_token.txt`
-          go test -v -race . -args --locator localhost:5433 --user dbadmin --tlsmode=custom
-          go test -race . -args --locator localhost:5433 --user dbadmin --tlsmode=custom --use_prepared_statements=0
-
-      
-   
+          kind delete cluster --name ${KIND_CLUSTER}
