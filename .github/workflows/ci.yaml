@@ -98,6 +98,17 @@ jobs:
               kubectl get pods -n my-verticadb-operator -o wide
               kubectl describe pods -n my-verticadb-operator
             }
+      # 🧩 Debug VerticaDB status after creation
+      - name: Check VerticaDB Status
+        run: |
+          echo "🔍 Checking VerticaDB CR details..."
+          kubectl get verticadb -n my-verticadb-operator -o yaml || true
+          echo
+          echo "📋 Describe VerticaDB:"
+          kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
+          echo
+          echo "🐛 Operator Logs (last 100 lines):"
+          kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=100 || true
 
       # Step 8: Wait for Vertica service before port-forwarding
       - name: Wait for Vertica service
