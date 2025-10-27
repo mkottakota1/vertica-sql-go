@@ -35,7 +35,7 @@ jobs:
           echo "Waiting for Vertica operator deployment rollout..."
           kubectl rollout status deployment/verticadb-operator-controller-manager -n vertica --timeout=180s || true
 
-      # Step 4: Wait for CRD registration to complete
+            # Step 4: Wait for CRD registration
       - name: Wait for Vertica CRD
         run: |
           echo "Waiting for VerticaDB CRD registration..."
