@@ -24,8 +24,6 @@ jobs:
       # Step 2: Set up Helm
       - name: Set up Helm
         uses: azure/setup-helm@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 3: Add Vertica Helm repo
       - name: Add Vertica Helm repo
@@ -37,7 +35,7 @@ jobs:
           done
           helm repo update
 
-      # Step 4: Install Vertica operator (includes CRDs)
+      # Step 4: Install Vertica Operator (includes CRDs)
       - name: Install Vertica Operator via Helm
         run: |
           helm install vdb-op vertica-charts/verticadb-operator \
@@ -46,21 +44,24 @@ jobs:
             --set installCRDs=true \
             --wait
 
-      # Step 5: Verify CRDs were installed
-      - name: Wait for Vertica CRDs
+      # ✅ Step 5: Wait until the CRD is actually registered
+      - name: Wait for Vertica CRDs to be registered
         run: |
-          echo "Waiting for VerticaDB CRD to be available..."
+          echo "Waiting for VerticaDB CRD registration..."
           for i in {1..30}; do
-            kubectl get crd verticadbs.vertica.com && break
-            echo "CRD not found yet. Retrying..."
-            sleep 10
+            if kubectl get crd verticadbs.vertica.com >/dev/null 2>&1; then
+              echo "VerticaDB CRD found!"
+              break
+            fi
+            echo "CRD not found yet, retrying in 5s..."
+            sleep 5
           done
-          kubectl get crd verticadbs.vertica.com || (echo "VerticaDB CRD not found" && exit 1)
+          kubectl get crd verticadbs.vertica.com || (echo "VerticaDB CRD not found!" && exit 1)
 
       # Step 6: Deploy VerticaDB
       - name: Deploy VerticaDB
         run: |
-          cat <<EOF | kubectl apply -f -
+          cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1beta1
           kind: VerticaDB
           metadata:
