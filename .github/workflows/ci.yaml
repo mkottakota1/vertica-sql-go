@@ -39,7 +39,7 @@ jobs:
       - name: Install Vertica Operator via Helm
         run: |
           echo "📦 Installing Vertica Operator via Helm..."
-          helm install vdb-op vertica-charts/vertica-operator \
+          helm install vdb-op vertica-charts/verticadb-operator \
             --namespace my-verticadb-operator \
             --create-namespace \
             --set installCRDs=true \
