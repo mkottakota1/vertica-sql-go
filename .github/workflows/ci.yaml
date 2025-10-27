@@ -44,19 +44,21 @@ jobs:
             --set installCRDs=true \
             --wait
 
-      # ✅ Step 5: Wait until the CRD is actually registered
-      - name: Wait for Vertica CRDs to be registered
+      # ✅ Step 5: Wait for CRD registration to complete
+      - name: Ensure Vertica CRD is available
         run: |
           echo "Waiting for VerticaDB CRD registration..."
-          for i in {1..30}; do
+          for i in {1..40}; do
             if kubectl get crd verticadbs.vertica.com >/dev/null 2>&1; then
-              echo "VerticaDB CRD found!"
-              break
+              if kubectl api-resources --api-group=vertica.com | grep -q VerticaDB; then
+                echo "✅ VerticaDB CRD is now registered and usable!"
+                break
+              fi
             fi
-            echo "CRD not found yet, retrying in 5s..."
+            echo "⏳ Still waiting for VerticaDB CRD to register... retry $i"
             sleep 5
           done
-          kubectl get crd verticadbs.vertica.com || (echo "VerticaDB CRD not found!" && exit 1)
+          kubectl api-resources --api-group=vertica.com | grep VerticaDB || (echo "❌ VerticaDB CRD not available!" && exit 1)
 
       # Step 6: Deploy VerticaDB
       - name: Deploy VerticaDB
