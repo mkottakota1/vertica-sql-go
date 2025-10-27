@@ -23,28 +23,45 @@ jobs:
       - name: Set up Helm
         uses: azure/setup-helm@v3
 
-      - name: Add Vertica Helm repo
+      - name: Add Vertica Helm repo (with retries)
         run: |
           for i in {1..3}; do
-            helm repo add vertica https://vertica.github.io/charts && break
+            helm repo add vertica-charts https://vertica.github.io/charts && break
             echo "Retrying helm repo add..."
             sleep 5
           done
           helm repo update
 
-      - name: Install Vertica using Helm
+      - name: Create namespace
+        run: kubectl create namespace my-verticadb-operator || true
+
+      - name: Install Vertica Operator
         run: |
-          helm install vertica-db vertica/vertica-k8s \
+          for i in {1..3}; do
+            helm install vdb-op --wait --namespace my-verticadb-operator vertica-charts/verticadb-operator && break
+            echo "Retrying Helm install for Vertica operator..."
+            sleep 10
+          done
+
+      - name: Wait for Vertica operator pod to be ready
+        run: |
+          kubectl wait --for=condition=ready pod -n my-verticadb-operator \
+            -l app.kubernetes.io/name=verticadb-operator --timeout=300s
+
+      - name: Install Vertica Database (single node)
+        run: |
+          helm install vertica-db vertica-charts/vertica-k8s \
+            --namespace my-verticadb-operator \
             --set image.repository=opentext/vertica-k8s \
             --set image.tag=latest \
-            --set license.secretName=license-secret \
             --set data.path=/data \
             --set database.name=verticadb \
             --set database.nodes=1
 
-      - name: Wait for Vertica pod to be ready
+      - name: Wait for Vertica DB pod to be ready
         run: |
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vertica-k8s --timeout=300s
+          kubectl wait --for=condition=ready pod -n my-verticadb-operator \
+            -l app.kubernetes.io/name=vertica-k8s --timeout=600s
 
       - name: Run Vertica SQL Go tests
         run: |
