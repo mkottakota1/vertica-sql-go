@@ -63,6 +63,11 @@ jobs:
       # Step 6: Deploy VerticaDB
       - name: Deploy VerticaDB
         run: |
+          # Create a fake secret for demo (normally you store real creds)
+          kubectl -n my-verticadb-operator create secret generic communal-creds \
+            --from-literal=AWS_ACCESS_KEY_ID=dummy \
+            --from-literal=AWS_SECRET_ACCESS_KEY=dummy
+            
           cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1
           kind: VerticaDB
@@ -73,10 +78,10 @@ jobs:
             image: opentext/vertica-k8s:latest
             communal:
               path: "s3://dummy-bucket"
-              credentials:
-                accessKeyID: dummy
-                secretAccessKey: dummy
-            localDataPath: /data
+              credentialSecret: communal-creds
+            local:
+              template:
+                localDataPath: /data
             dbName: vdb
             subclusters:
               - name: defaultsubcluster
