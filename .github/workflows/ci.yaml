@@ -44,7 +44,7 @@ jobs:
             --set installCRDs=true \
             --wait
 
-      # ✅ Step 5: Wait for CRD registration to complete
+      # Step 5: Wait for CRD registration to complete
       - name: Ensure Vertica CRD is available
         run: |
           echo "Waiting for VerticaDB CRD registration..."
@@ -64,7 +64,7 @@ jobs:
       - name: Deploy VerticaDB
         run: |
           cat <<'EOF' | kubectl apply -f -
-          apiVersion: vertica.com/v1beta1
+          apiVersion: vertica.com/v1
           kind: VerticaDB
           metadata:
             name: verticadb-sample
