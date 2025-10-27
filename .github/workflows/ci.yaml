@@ -90,9 +90,22 @@ jobs:
       # Step 7: Wait for VerticaDB pod to be ready
       - name: Wait for VerticaDB pod
         run: |
-          echo "Waiting for VerticaDB pod to be ready..."
-          kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vertica \
-            --namespace my-verticadb-operator --timeout=600s
+          eecho "Waiting for VerticaDB pod(s) to be created..."
+          for i in {1..60}; do
+            POD_COUNT=$(kubectl get pods -n my-verticadb-operator --no-headers 2>/dev/null | wc -l)
+            if [ "$POD_COUNT" -gt 0 ]; then
+              echo "✅ Pods detected ($POD_COUNT). Proceeding to readiness check..."
+              break
+            fi
+            echo "⏳ No pods yet (attempt $i/60). Retrying in 10s..."
+            sleep 10
+          done
+
+          echo "Waiting for VerticaDB pod(s) to become ready..."
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=vertica \
+            -n my-verticadb-operator --timeout=900s
+
+          echo "✅ VerticaDB pods are ready!"
 
       # Step 8: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
