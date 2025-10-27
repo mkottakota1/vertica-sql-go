@@ -113,15 +113,23 @@ jobs:
 
           echo "✅ VerticaDB pods are ready or initialization complete!"
 
-      # Step 8: Show Vertica cluster status (for debugging/logging)
+      # Step 8: Show VerticaDB cluster status
       - name: Show VerticaDB cluster status
         run: |
           echo "📋 Current Vertica cluster state:"
           kubectl get pods -n my-verticadb-operator -o wide
-          echo ""
+          kubectl get svc -n my-verticadb-operator || true
           kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
 
-      # Step 9: Run Vertica SQL Go tests
+      # Step 9: Port-forward Vertica service to localhost
+      - name: Port-forward Vertica service
+        run: |
+          echo "🔌 Port-forwarding Vertica service to localhost:5433..."
+          kubectl port-forward svc/verticadb-sample -n my-verticadb-operator 5433:5433 &
+          sleep 10
+          kubectl get svc -n my-verticadb-operator
+
+      # Step 10: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
         run: |
           go test ./... -v
