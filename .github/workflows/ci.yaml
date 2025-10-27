@@ -120,21 +120,24 @@ jobs:
             exit 1
           fi
 
-      # Step 9: Port-forward Vertica service
-      - name: Port-forward and wait for Vertica
-      run: |
-        echo "🔌 Starting port-forward and waiting for Vertica..."
-        kubectl port-forward svc/verticadb-sample-defaultsubcluster -n my-verticadb-operator 5433:5433 &
-        sleep 5
-        for i in {1..30}; do
-          if nc -z localhost 5433; then
-            echo "✅ Vertica is reachable!"
+      # Step 9: Port-forward Vertica service and wait for connection
+      - name: Port-forward and wait for Vertica readiness
+        run: |
+          echo "🔌 Setting up port-forward to localhost:5433..."
+          nohup kubectl port-forward svc/verticadb-sample-defaultsubcluster -n my-verticadb-operator 5433:5433 > port-forward.log 2>&1 &
+          echo "🕓 Waiting 10 seconds for port-forward to start..."
+          sleep 10
+
+          echo "🧠 Checking if Vertica is accepting TCP connections on localhost:5433..."
+          for i in {1..30}; do
+            if nc -z localhost 5433; then
+              echo "✅ Vertica is reachable on port 5433!"
             break
-          fi
+            fi
           echo "⏳ Vertica not ready yet (attempt $i/30). Retrying in 10s..."
           sleep 10
-        done
-        nc -z localhost 5433 || (echo "❌ Vertica never became reachable on port 5433" && exit 1)
+          done
+
 
       # Step 10: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
