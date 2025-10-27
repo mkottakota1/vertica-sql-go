@@ -104,7 +104,7 @@ jobs:
             name: ${VDB_NAME}
             namespace: ${K8S_NAMESPACE}
           spec:
-            image: "vertica/vertica:latest"
+            image: "opentext/vertica-k8s:latest"
             size: 1
             dbName: ${VDB_DBNAME}
             superuserPasswordSecret:
@@ -115,7 +115,6 @@ jobs:
 
       - name: Wait for Vertica pod and localhost:5433 to be reachable
         run: |
-          # Wait for pod to appear and become Running
           for i in $(seq 1 120); do
             POD=$(kubectl -n ${K8S_NAMESPACE} get pods -o jsonpath='{.items[0].metadata.name}' --ignore-not-found)
             if [ -n "${POD}" ]; then
@@ -127,7 +126,6 @@ jobs:
             fi
             sleep 5
           done
-          # Confirm host port mapping is reachable
           for i in $(seq 1 60); do
             if nc -z localhost ${HOST_PORT}; then
               echo "localhost:${HOST_PORT} reachable"
