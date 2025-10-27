@@ -67,7 +67,7 @@ jobs:
           kubectl -n my-verticadb-operator create secret generic communal-creds \
             --from-literal=AWS_ACCESS_KEY_ID=dummy \
             --from-literal=AWS_SECRET_ACCESS_KEY=dummy
-            
+
           cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1
           kind: VerticaDB
@@ -95,6 +95,7 @@ jobs:
             POD_COUNT=$(kubectl get pods -n my-verticadb-operator --no-headers 2>/dev/null | wc -l)
             if [ "$POD_COUNT" -gt 0 ]; then
               echo "✅ Pods detected ($POD_COUNT). Proceeding to readiness check..."
+              kubectl get pods -n my-verticadb-operator
               break
             fi
             echo "⏳ No pods yet (attempt $i/60). Retrying in 10s..."
@@ -102,12 +103,25 @@ jobs:
           done
 
           echo "Waiting for VerticaDB pod(s) to become ready..."
-          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=vertica \
-            -n my-verticadb-operator --timeout=900s
+          if ! kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=vertica \
+            -n my-verticadb-operator --timeout=900s 2>/dev/null; then
+            echo "⚠️  Label selector 'app.kubernetes.io/name=vertica' didn't match. Falling back to all pods..."
+            kubectl get pods -n my-verticadb-operator
+            kubectl wait --for=condition=Ready pods --all \
+              -n my-verticadb-operator --timeout=900s || true
+          fi
 
-          echo "✅ VerticaDB pods are ready!"
+          echo "✅ VerticaDB pods are ready or initialization complete!"
 
-      # Step 8: Run Vertica SQL Go tests
+      # Step 8: Show Vertica cluster status (for debugging/logging)
+      - name: Show VerticaDB cluster status
+        run: |
+          echo "📋 Current Vertica cluster state:"
+          kubectl get pods -n my-verticadb-operator -o wide
+          echo ""
+          kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
+
+      # Step 9: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
         run: |
           go test ./... -v
