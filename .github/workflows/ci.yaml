@@ -14,7 +14,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # Step 1: Set up Kubernetes cluster (KinD)
+      # Step 1: Create Kubernetes cluster
       - name: Set up Kubernetes (KinD)
         uses: helm/kind-action@v1.8.0
         with:
@@ -24,6 +24,8 @@ jobs:
       # Step 2: Set up Helm
       - name: Set up Helm
         uses: azure/setup-helm@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 3: Add Vertica Helm repo
       - name: Add Vertica Helm repo
@@ -34,25 +36,17 @@ jobs:
             sleep 5
           done
           helm repo update
-      - name: Install Vertica CRDs
-        run: |
-          echo "Installing Vertica CRDs..."
-          kubectl create namespace my-verticadb-operator || true
-          kubectl apply -f https://raw.githubusercontent.com/vertica/vertica-kubernetes/main/deploy/crds/verticadb.vertica.com_verticadbs.yaml
-          kubectl apply -f https://raw.githubusercontent.com/vertica/vertica-kubernetes/main/deploy/crds/verticadb.vertica.com_verticaautoscalers.yaml
-          kubectl apply -f https://raw.githubusercontent.com/vertica/vertica-kubernetes/main/deploy/crds/verticadb.vertica.com_verticadboperators.yaml
-          echo "Verifying CRDs..."
-          kubectl get crds | grep vertica
 
-      # Step 5: Install Vertica Operator via Helm
-      - name: Install Vertica Operator
+      # Step 4: Install Vertica operator (includes CRDs)
+      - name: Install Vertica Operator via Helm
         run: |
           helm install vdb-op vertica-charts/verticadb-operator \
             --namespace my-verticadb-operator \
             --create-namespace \
+            --set installCRDs=true \
             --wait
 
-      # Step 6: Wait for CRDs (in case Helm overwrites)
+      # Step 5: Verify CRDs were installed
       - name: Wait for Vertica CRDs
         run: |
           echo "Waiting for VerticaDB CRD to be available..."
@@ -63,7 +57,7 @@ jobs:
           done
           kubectl get crd verticadbs.vertica.com || (echo "VerticaDB CRD not found" && exit 1)
 
-      # Step 7: Deploy VerticaDB
+      # Step 6: Deploy VerticaDB
       - name: Deploy VerticaDB
         run: |
           cat <<EOF | kubectl apply -f -
@@ -86,14 +80,14 @@ jobs:
                 size: 1
           EOF
 
-      # Step 8: Wait for VerticaDB pod to be ready
+      # Step 7: Wait for VerticaDB pod to be ready
       - name: Wait for VerticaDB pod
         run: |
           echo "Waiting for VerticaDB pod to be ready..."
           kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vertica \
             --namespace my-verticadb-operator --timeout=600s
 
-      # Step 9: Run Vertica SQL Go tests
+      # Step 8: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
         run: |
           go test ./... -v
