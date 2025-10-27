@@ -80,8 +80,7 @@ jobs:
               path: "s3://dummy-bucket"
               credentialSecret: communal-creds
             local:
-              template:
-                localDataPath: /data
+              dataPath: /data
             dbName: vdb
             subclusters:
               - name: defaultsubcluster
