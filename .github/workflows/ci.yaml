@@ -60,13 +60,17 @@ jobs:
           done
           kubectl api-resources --api-group=vertica.com | grep VerticaDB || (echo "❌ VerticaDB CRD not available!" && exit 1)
 
-      # Step 6: Deploy VerticaDB
+      # Step 6: Ensure a default storage class exists for KinD
+      - name: Ensure default storage class
+        run: |
+          echo "📦 Ensuring a default storage class exists..."
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/kind/main/site/static/examples/storageclass.yaml
+          kubectl get storageclass
+
+      # Step 7: Deploy VerticaDB (local-only mode)
       - name: Deploy VerticaDB
         run: |
-          # Create a fake secret for demo (normally you store real creds)
-          kubectl -n my-verticadb-operator create secret generic communal-creds \
-            --from-literal=AWS_ACCESS_KEY_ID=dummy \
-            --from-literal=AWS_SECRET_ACCESS_KEY=dummy
+          echo "🚀 Deploying VerticaDB (local-only, no S3)..."
 
           cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1
@@ -75,34 +79,32 @@ jobs:
             name: verticadb-sample
             namespace: my-verticadb-operator
           spec:
-            image: opentext/vertica-k8s:latest
-            communal:
-              path: "s3://dummy-bucket"
-              credentialSecret: communal-creds
+            image: opentext/vertica-k8s:24.2.0-0
+            dbName: vdb
+            initPolicy: CreateSkipCommunal
             local:
               dataPath: /data
-            dbName: vdb
             subclusters:
               - name: defaultsubcluster
                 size: 3
           EOF
 
-      # Step 7: Wait for VerticaDB pod to be ready
-      - name: Wait for VerticaDB pod
+      # Step 8: Wait for VerticaDB pod(s) to be ready
+      - name: Wait for VerticaDB pod(s)
         run: |
-          echo "Waiting for VerticaDB pod(s) to be created..."
+          echo "⏳ Waiting for VerticaDB pods to be created..."
           for i in {1..60}; do
-            POD_COUNT=$(kubectl get pods -n my-verticadb-operator --no-headers 2>/dev/null | wc -l)
+            POD_COUNT=$(kubectl get pods -n my-verticadb-operator --no-headers 2>/dev/null | grep verticadb-sample | wc -l || true)
             if [ "$POD_COUNT" -gt 0 ]; then
-              echo "✅ Pods detected ($POD_COUNT). Proceeding to readiness check..."
+              echo "✅ VerticaDB pods detected ($POD_COUNT). Proceeding to readiness check..."
               kubectl get pods -n my-verticadb-operator
               break
             fi
-            echo "⏳ No pods yet (attempt $i/60). Retrying in 10s..."
+            echo "⏳ No VerticaDB pods yet (attempt $i/60). Retrying in 10s..."
             sleep 10
           done
 
-          echo "Waiting for VerticaDB pod(s) to become ready..."
+          echo "🕒 Waiting for VerticaDB pods to become ready..."
           if ! kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=vertica \
             -n my-verticadb-operator --timeout=900s 2>/dev/null; then
             echo "⚠️  Label selector 'app.kubernetes.io/name=vertica' didn't match. Falling back to all pods..."
@@ -111,15 +113,7 @@ jobs:
               -n my-verticadb-operator --timeout=900s || true
           fi
 
-          echo "✅ VerticaDB pods are ready or initialization complete!"
-
-      # Step 8: Show VerticaDB cluster status
-      - name: Show VerticaDB cluster status
-        run: |
-          echo "📋 Current Vertica cluster state:"
-          kubectl get pods -n my-verticadb-operator -o wide
-          kubectl get svc -n my-verticadb-operator || true
-          kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
+          echo "✅ VerticaDB pods are ready!"
 
       # Step 9: Port-forward Vertica service to localhost
       - name: Port-forward Vertica service
