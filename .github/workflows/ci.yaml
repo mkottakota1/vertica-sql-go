@@ -124,7 +124,7 @@ jobs:
       - name: Port-forward Vertica service
         run: |
           echo "🔌 Setting up port-forward to localhost:5433..."
-          kubectl port-forward svc/verticadb-sample -n my-verticadb-operator 5433:5433 &
+          kubectl port-forward svc/verticadb-sample-defaultsubcluster -n my-verticadb-operator 5433:5433 &
           sleep 15
           kubectl get svc -n my-verticadb-operator
 
