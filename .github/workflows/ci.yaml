@@ -84,7 +84,7 @@ jobs:
             dbName: vdb
             subclusters:
               - name: defaultsubcluster
-                size: 1
+                size: 3
           EOF
 
       # Step 7: Wait for VerticaDB pod to be ready
