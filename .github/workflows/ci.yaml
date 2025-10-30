@@ -24,6 +24,8 @@ jobs:
       # Step 2: Set up Helm
       - name: Set up Helm
         uses: azure/setup-helm@v3
+        with:
+          version: "3.11.3"
 
       # Step 3: Add Vertica Helm repo
       - name: Add Vertica Helm repo
