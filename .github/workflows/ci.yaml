@@ -216,47 +216,16 @@ jobs:
             exit 1
           fi
 
-      - name: Port-forward and wait for Vertica readiness
+      # Run Vertica SQL Go tests inside cluster
+      - name: Run Vertica SQL Go tests inside cluster
         run: |
-          NAMESPACE=my-verticadb-operator
-          SVC=verticadb-sample-defaultsubcluster
-          LOCAL_PORT=5433
-          REMOTE_PORT=5433
-
-          if ! kubectl get svc "$SVC" -n "$NAMESPACE" >/dev/null 2>&1; then
-            echo "Service $SVC not found; listing services:"
-            kubectl get svc -n "$NAMESPACE" || true
-            exit 1
-          fi
-
-          nohup kubectl port-forward svc/"$SVC" -n "$NAMESPACE" $LOCAL_PORT:$REMOTE_PORT > port-forward.log 2>&1 &
-          PF_PID=$!
-          sleep 3
-
-          for i in {1..30}; do
-            if nc -z localhost $LOCAL_PORT; then
-              echo "Vertica reachable"
-              break
-            fi
-            sleep 5
-          done
-
-          if ! nc -z localhost $LOCAL_PORT; then
-            echo "Port-forward failed; printing logs"
-            tail -n +1 port-forward.log || true
-            kubectl get pods -n "$NAMESPACE" -o wide || true
-            exit 1
-          fi
-
-      - name: Check Vertica Version
-        run: |
-          POD_NAME=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/component=primary -o name | head -n1 | sed 's|pod/||')
-          if [ -z "$POD_NAME" ]; then
-            kubectl get pods -n my-verticadb-operator -o wide
-            exit 1
-          fi
-          kubectl exec -n my-verticadb-operator -it $POD_NAME -- bash -c "/opt/vertica/bin/vsql -U dbadmin -c 'SELECT version();'"
-
-      - name: Run Vertica SQL Go tests
-        run: |
-          go test ./... -v
+          echo "🚀 Launching test pod inside Kubernetes..."
+          kubectl run go-test-runner \
+            --rm -i --restart=Never \
+            --image=golang:1.20 \
+            --namespace=my-verticadb-operator \
+            -- bash -c "
+              apt-get update -y >/dev/null 2>&1 || true;
+              git clone https://github.com/${{ github.repository }} /src;
+              cd /src;
+              go test ./... -v
