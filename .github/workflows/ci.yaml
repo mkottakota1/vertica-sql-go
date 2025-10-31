@@ -14,14 +14,12 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      # KinD
       - name: Set up Kubernetes (KinD)
         uses: helm/kind-action@v1.8.0
         with:
           cluster_name: vertica-ci
           node_image: kindest/node:v1.29.0
 
-      # Helm
       - name: Set up Helm
         uses: azure/setup-helm@v3
         with:
@@ -33,38 +31,77 @@ jobs:
           helm repo add bitnami https://charts.bitnami.com/bitnami || true
           helm repo update
 
-      # Install MinIO suitable for KinD (ephemeral)
-      - name: Install MinIO (Bitnami) with no persistence
+      # -----------------------
+      # Minimal MinIO manifest
+      # -----------------------
+      - name: Install MinIO (minimal manifest, no PVCs)
         run: |
-          NAMESPACE=minio
-          RELEASE=minio
-          ACCESS_KEY=minio
-          SECRET_KEY=miniopass
+          kubectl create ns minio || true
+          cat <<'EOF' > minio-manifest.yaml
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: minio
+            namespace: minio
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: minio
+            template:
+              metadata:
+                labels:
+                  app: minio
+              spec:
+                containers:
+                - name: minio
+                  image: minio/minio:RELEASE.2023-09-01T00-00-00Z
+                  args: ["server", "/data"]
+                  env:
+                  - name: MINIO_ROOT_USER
+                    value: "minio"
+                  - name: MINIO_ROOT_PASSWORD
+                    value: "miniopass"
+                  ports:
+                  - containerPort: 9000
+                  volumeMounts:
+                  - name: data
+                    mountPath: /data
+                volumes:
+                - name: data
+                  emptyDir: {}
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: minio
+            namespace: minio
+          spec:
+            selector:
+              app: minio
+            ports:
+            - port: 9000
+              targetPort: 9000
+            type: ClusterIP
+          EOF
 
-          helm upgrade --install ${RELEASE} bitnami/minio \
-            --namespace ${NAMESPACE} --create-namespace \
-            --wait --timeout 10m \
-            --set auth.rootUser=${ACCESS_KEY} \
-            --set auth.rootPassword=${SECRET_KEY} \
-            --set persistence.enabled=false \
-            --set replicaCount=1 \
-            --set service.type=ClusterIP
-
-          # wait for pod Running
+          kubectl apply -f minio-manifest.yaml
           for i in {1..30}; do
-            POD=$(kubectl get pods -n ${NAMESPACE} -l app.kubernetes.io/name=minio -o name 2>/dev/null | head -n1 || true)
-            if [ -n "$POD" ] && kubectl get ${POD} -n ${NAMESPACE} -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
-              echo "MinIO Running"
+            POD=$(kubectl get pods -n minio -l app=minio -o name 2>/dev/null | head -n1 || true)
+            if [ -n "$POD" ] && kubectl get $POD -n minio -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running; then
+              echo "✅ MinIO Running ($POD)"
               break
             fi
             echo "Waiting for MinIO ($i/30)..."
             sleep 5
           done
 
-          kubectl get pods -n ${NAMESPACE} -o wide || true
-          kubectl get svc -n ${NAMESPACE} || true
+          kubectl get pods -n minio -o wide || true
+          kubectl get svc -n minio || true
 
-      # Install Vertica Operator (opentext image) with S3 endpoint configured
+      # -----------------------
+      # Install Vertica Operator (opentext image) with S3 endpoint config
+      # -----------------------
       - name: Install Vertica Operator (opentext image) with S3 endpoint config
         run: |
           RELEASE=vdb-op
@@ -79,8 +116,6 @@ jobs:
           image:
             repository: ${IMAGE_REPO}
             tag: ${IMAGE_TAG}
-          # Provide envs to controller/manager so it uses our MinIO endpoint.
-          # These keys may vary by chart version; common names are controller.extraEnv or controller.env.
           controller:
             extraEnv:
               - name: S3_ENDPOINT
@@ -91,13 +126,11 @@ jobs:
                 value: "false"
           EOF
 
-          # Use helm to install with our values file (long timeout for CI)
           helm upgrade --install ${RELEASE} vertica-charts/verticadb-operator \
             --namespace ${NAMESPACE} --create-namespace \
             -f operator-values.yaml \
             --wait --timeout 10m
 
-          # quick check
           kubectl get pods -n ${NAMESPACE} -o wide || true
           kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=50 || true
 
@@ -139,31 +172,50 @@ jobs:
                 size: 3
           EOF
 
-      # Wait for Vertica resources
-      - name: Wait for VerticaCRD and pods
+      - name: Wait for VerticaCRD registration
         run: |
           for i in {1..30}; do
             if kubectl get crd verticadbs.vertica.com >/dev/null 2>&1; then
+              echo "VerticaCRD present"
               break
             fi
             sleep 2
           done
 
+      - name: Wait for VerticaDB pods to be ready
+        run: |
           kubectl get pods -n my-verticadb-operator || true
           kubectl wait --for=condition=Ready pods --all -n my-verticadb-operator --timeout=900s || {
-            echo "Pods not all ready; dumping details..."
+            echo "⚠️ Pods not all ready, showing details:"
             kubectl get pods -n my-verticadb-operator -o wide || true
             kubectl describe pods -n my-verticadb-operator || true
           }
 
-      # Debug and checks
-      - name: Check VerticaDB CR and operator logs
+      - name: Check VerticaDB Status and operator logs
         run: |
           kubectl get verticadb -n my-verticadb-operator -o yaml || true
           kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
           kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=200 || true
 
-      # Port-forward and test as before...
+      - name: Wait for Vertica service
+        run: |
+          echo "Waiting for Vertica service to appear..."
+          for i in {1..30}; do
+            if kubectl get svc verticadb-sample -n my-verticadb-operator >/dev/null 2>&1; then
+              echo "Vertica service found"
+              break
+            fi
+            sleep 10
+          done
+
+          if ! kubectl get svc verticadb-sample -n my-verticadb-operator >/dev/null 2>&1; then
+            echo "Vertica service did not appear; dumping debug:"
+            kubectl get svc -n my-verticadb-operator || true
+            kubectl get pods -n my-verticadb-operator || true
+            kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
+            exit 1
+          fi
+
       - name: Port-forward and wait for Vertica readiness
         run: |
           NAMESPACE=my-verticadb-operator
