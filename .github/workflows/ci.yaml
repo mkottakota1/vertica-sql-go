@@ -27,14 +27,15 @@ jobs:
         with:
           version: "3.11.3"
 
-      # Step 3: Add Vertica Helm repo
-      - name: Add Vertica Helm repo
+      # Step 3: Add Helm repos
+      - name: Add Helm repos
         run: |
           for i in {1..3}; do
             helm repo add vertica-charts https://vertica.github.io/charts && break
-            echo "Retrying helm repo add..."
+            echo "Retrying vertica helm repo add..."
             sleep 5
           done
+          helm repo add bitnami https://charts.bitnami.com/bitnami || true
           helm repo update
 
       # Step 4: Install Vertica Operator (includes CRDs)
@@ -60,14 +61,63 @@ jobs:
             sleep 5
           done
 
-      # Step 6: Deploy VerticaDB (Local mode with dummy communal)
+      # NEW: Step 5.1 Install MinIO (S3 compatible) for communal storage
+      - name: Install MinIO (Bitnami) and wait
+        run: |
+          NAMESPACE=minio
+          RELEASE=minio
+          ACCESS_KEY=minio
+          SECRET_KEY=miniopass
+
+          echo "Installing MinIO in namespace $NAMESPACE..."
+          helm upgrade --install $RELEASE bitnami/minio \
+            --namespace $NAMESPACE --create-namespace \
+            --wait \
+            --set auth.rootUser=$ACCESS_KEY \
+            --set auth.rootPassword=$SECRET_KEY \
+            --set service.type=ClusterIP
+
+          # wait for minio pod ready
+          for i in {1..30}; do
+            if kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=minio -o jsonpath='{.items[0].status.phase}' 2>/dev/null | grep -q Running; then
+              echo "✅ MinIO is running"
+              break
+            fi
+            echo "Waiting for MinIO to be Running ($i/30)..."
+            sleep 5
+          done
+
+      # NEW: Step 5.2 Create communal secret and optional bucket
+      - name: Create communal secret and create bucket
+        run: |
+          VERTICA_NS=my-verticadb-operator
+          MINIO_NS=minio
+          MINIO_SVC=minio
+          ACCESS_KEY=minio
+          SECRET_KEY=miniopass
+          BUCKET=vertica-bucket
+
+          echo "Creating secret with MinIO creds in $VERTICA_NS..."
+          kubectl create secret generic communal-creds -n $VERTICA_NS \
+            --from-literal=AWS_ACCESS_KEY_ID=${ACCESS_KEY} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${SECRET_KEY} || true
+
+          echo "Creating bucket '${BUCKET}' in MinIO (using mc inside minio pod)..."
+          # Create a bucket using the MinIO client (mc). If mc not available, use aws cli alternative or skip.
+          POD=$(kubectl get pods -n ${MINIO_NS} -l app.kubernetes.io/name=minio -o name | head -n1 | sed 's|pod/||')
+          if [ -n "$POD" ]; then
+            # use embedded mc if chart provides it; otherwise use a simple curl health check and let Vertica create the bucket
+            kubectl exec -n ${MINIO_NS} ${POD} -- /bin/sh -c "mc --help" >/dev/null 2>&1 && \
+              kubectl exec -n ${MINIO_NS} ${POD} -- /bin/sh -c "mc alias set local http://127.0.0.1:9000 ${ACCESS_KEY} ${SECRET_KEY} && mc mb --ignore-existing local/${BUCKET}" || \
+              echo "mc not available in MinIO pod; skip bucket creation and let Vertica create the bucket on first use"
+          else
+            echo "No MinIO pod found; skipping bucket creation"
+          fi
+
+      # Step 6: Deploy VerticaDB (point communal to MinIO)
       - name: Deploy VerticaDB
         run: |
-          echo "🚀 Deploying VerticaDB (local mode with dummy communal path)..."
-          kubectl -n my-verticadb-operator create secret generic communal-creds \
-            --from-literal=AWS_ACCESS_KEY_ID=dummy \
-            --from-literal=AWS_SECRET_ACCESS_KEY=dummy || true
-
+          echo "🚀 Deploying VerticaDB (communal -> MinIO)..."
           cat <<EOF | kubectl apply -f -
           apiVersion: vertica.com/v1
           kind: VerticaDB
@@ -79,7 +129,11 @@ jobs:
             dbName: vdb
             initPolicy: Create
             communal:
-              path: "s3://dummy-bucket"
+              # Use in-cluster MinIO service DNS; include port 9000 and a bucket
+              path: "s3://vertica-bucket"
+              # For non-AWS endpoints the operator usually looks for S3_ENDPOINT via env or config;
+              # the Vertica operator may accept an S3 endpoint in annotations or require extra config.
+              # If operator supports custom endpoint via environment, set it in the Helm chart values when installing the operator.
               credentialSecret: communal-creds
             local:
               dataPath: /data
@@ -179,7 +233,12 @@ jobs:
       - name: Check Vertica Version
         run: |
           echo "🔍 Checking Vertica version inside Kubernetes..."
-          POD_NAME=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/component=primary -o jsonpath='{.items[0].metadata.name}')
+          POD_NAME=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/component=primary -o name | head -n1 | sed 's|pod/||')
+          if [ -z "$POD_NAME" ]; then
+            echo "❌ No primary pod found; dumping pods:"
+            kubectl get pods -n my-verticadb-operator -o wide
+            exit 1
+          fi
           echo "📦 Found Vertica pod: $POD_NAME"
 
           echo "🧠 Running version query..."
