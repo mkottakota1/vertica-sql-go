@@ -215,6 +215,67 @@ jobs:
             kubectl describe verticadb verticadb-sample -n my-verticadb-operator || true
             exit 1
           fi
+            - name: Wait for operator controller ready
+        run: |
+          kubectl wait --for=condition=Ready pods -l control-plane=controller-manager -n my-verticadb-operator --timeout=10m || true
+
+      - name: Wait for Vertica pod to start (long timeout)
+        run: |
+          echo "Waiting for vertica pod startup (20m)..."
+          kubectl wait --for=condition=Ready pod/verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --timeout=20m || {
+            echo "Timed out waiting for pod Ready; collecting diagnostics..."
+            kubectl get pods -n my-verticadb-operator -o wide
+            kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
+            kubectl get events -n my-verticadb-operator --sort-by='.lastTimestamp' | tail -n50 || true
+            exit 1
+          }
+
+      - name: Wait for Vertica service endpoints
+        run: |
+          for i in {1..60}; do
+            if kubectl get endpoints -n my-verticadb-operator verticadb-sample-defaultsubcluster -o jsonpath='{.subsets[*].addresses[*].ip}' | grep -q .; then
+              echo "✅ Vertica endpoints present"
+              break
+            fi
+            echo "Waiting for Vertica endpoints ($i/60)..."
+            sleep 10
+          done
+          # If still none, dump diagnostics
+          if ! kubectl get endpoints -n my-verticadb-operator verticadb-sample-defaultsubcluster -o jsonpath='{.subsets[*].addresses[*].ip}' | grep -q .; then
+            echo "No endpoints after wait; dumping debugging info"
+            kubectl get svc -n my-verticadb-operator -o wide || true
+            kubectl describe svc verticadb-sample-defaultsubcluster -n my-verticadb-operator || true
+            kubectl get pods -n my-verticadb-operator -o wide || true
+            kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
+            kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
+            kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=500 || true
+            exit 1
+          fi
+
+      - name: Collect server logs and startup.json (for record)
+        run: |
+          kubectl logs verticadb-sample-defaultsubcluster-0 -c server -n my-verticadb-operator --tail=500 || true
+          kubectl exec -n my-verticadb-operator verticadb-sample-defaultsubcluster-0 -c server -- \
+            sh -c 'ls -la /tmp/startup /opt/vertica/log || true; if [ -f /tmp/startup/startup.json ]; then echo "=== startup.json ==="; sed -n "1,200p" /tmp/startup/startup.json || true; fi' || true
+
+      - name: Test MinIO reachability and list buckets
+        run: |
+          kubectl run --rm -i --restart=Never curlpod --image=radial/busyboxplus:curl -n my-verticadb-operator -- \
+            sh -c 'curl -sS http://minio.minio.svc.cluster.local:9000/ && echo "minio reachable" || echo "minio unreachable"' || true
+          kubectl run --rm -i --restart=Never awscli --image=amazon/aws-cli -n my-verticadb-operator -- \
+            aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3api list-buckets || true
+
+      - name: Probe server health endpoint
+        run: |
+          kubectl exec -n my-verticadb-operator verticadb-sample-defaultsubcluster-0 -c server -- \
+            sh -c 'curl -sS -w "HTTP=%{http_code}\n" http://127.0.0.1:8080/v2/health || echo "health probe failed"' || true
+
+      - name: Save final diagnostics if tests will run (non-fatal)
+        if: always()
+        run: |
+          kubectl get pods -n my-verticadb-operator -o wide || true
+          kubectl get svc -n my-verticadb-operator -o wide || true
+          kubectl get endpoints -n my-verticadb-operator || true
 
       - name: Debug Vertica pods and services
         run: |
