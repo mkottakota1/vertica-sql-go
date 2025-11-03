@@ -218,14 +218,14 @@ jobs:
 
       - name: Run Vertica SQL Go tests inside cluster
         run: |
-         kubectl run go-test-runner \
-         --rm -i --restart=Never \
-         --image=golang:1.20 \
-      --namespace=my-verticadb-operator \
-      -- bash -c "
-        git clone https://github.com/mkottakota1/vertica-sql-go /src;
-        cd /src;
-        go test ./... -v -args \
+          kubectl run go-test-runner \
+          --rm -i --restart=Never \
+          --image=golang:1.20 \
+          --namespace=my-verticadb-operator \
+          -- bash -c "
+          git clone https://github.com/mkottakota1/vertica-sql-go /src;
+          cd /src;
+          go test ./... -v -args \
           --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
           --user dbadmin
       "
