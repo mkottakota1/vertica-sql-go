@@ -137,7 +137,6 @@ jobs:
             image: opentext/vertica-k8s:latest
             dbName: vdb
             initPolicy: Create
-            kSafety: 0
             communal:
               path: "s3://vertica-bucket"
               credentialSecret: communal-creds
@@ -146,7 +145,7 @@ jobs:
               depotPath: /depot
             subclusters:
               - name: defaultsubcluster
-                size: 1
+                size: 3
           EOF
 
           kubectl annotate verticadb verticadb-sample -n my-verticadb-operator vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
