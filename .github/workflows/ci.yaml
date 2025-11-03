@@ -35,6 +35,7 @@ jobs:
       - name: Install MinIO (namespace minio)
         run: |
           kubectl create ns minio || true
+
           cat <<'EOF' > minio.yaml
           apiVersion: apps/v1
           kind: Deployment
@@ -83,15 +84,16 @@ jobs:
           EOF
 
           kubectl apply -f minio.yaml
-          kubectl -n minio rollout status deployment/minio --timeout=2m || true
+          kubectl -n minio rollout status deployment/minio --timeout=3m
           kubectl get pods -n minio -o wide || true
-          kubectl get svc -n minio || true
+          kubectl get svc -n minio -o wide || true
 
-      - name: Install Vertica Operator (configure S3 endpoint)
+      - name: Install Vertica Operator (configure S3 endpoint and controller env)
         run: |
           NAMESPACE=my-verticadb-operator
           MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000
           kubectl create ns ${NAMESPACE} || true
+
           cat <<'EOF' > operator-values.yaml
           installCRDs: true
           controller:
@@ -106,26 +108,33 @@ jobs:
 
           helm upgrade --install vdb-op vertica-charts/verticadb-operator -n ${NAMESPACE} -f operator-values.yaml --wait --timeout 10m
           kubectl -n ${NAMESPACE} get pods -o wide || true
-          kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=100 || true
+          kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=200 || true
 
-      - name: Create communal secret for Vertica (operator key names)
+      - name: Create communal secret for Vertica (operator and Vertica process keys)
         run: |
           NS=my-verticadb-operator
           ACCESS_KEY=minio
           SECRET_KEY=miniopass
           kubectl create ns ${NS} || true
           kubectl delete secret communal-creds -n ${NS} --ignore-not-found=true || true
+
+          # Create a secret that contains both common operator key names and AWS-style key names.
+          # That avoids mismatches between operator code paths and Vertica runtime expecting AWSRegion/AWS keys.
           kubectl create secret generic communal-creds -n ${NS} \
             --from-literal=accesskey=${ACCESS_KEY} \
-            --from-literal=secretkey=${SECRET_KEY}
+            --from-literal=secretkey=${SECRET_KEY} \
+            --from-literal=AWSAccessKeyID=${ACCESS_KEY} \
+            --from-literal=AWSSecretAccessKey=${SECRET_KEY}
+
           kubectl get secret communal-creds -n ${NS} -o yaml || true
 
-      - name: Ensure MinIO bucket exists (use mc inside cluster)
+      - name: Ensure MinIO bucket exists (use mc inside minio namespace)
         run: |
-          kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
+          # run the mc helper in the minio namespace so DNS/service access is local and predictable
+          kubectl run --rm -i --restart=Never mc --image=minio/mc -n minio --command -- \
             sh -c "mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
 
-      - name: Deploy VerticaDB
+      - name: Deploy VerticaDB (set awsRegion in the CRD communal stanza)
         run: |
           cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1
@@ -140,6 +149,8 @@ jobs:
             communal:
               path: "s3://vertica-bucket"
               credentialSecret: communal-creds
+              # Vertica's bootstrap needs explicit region (AWSRegion knob); set it here so the bootstrap can pass it through
+              awsRegion: "us-east-1"
             local:
               dataPath: /data
               depotPath: /depot
