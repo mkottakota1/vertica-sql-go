@@ -221,6 +221,7 @@ jobs:
             initPolicy: Create
             communal:
               path: "s3://vertica-bucket"
+              endpoint: "http://minio.my-verticadb-operator.svc.cluster.local:9000"
               credentialSecret: communal-creds
             local:
               dataPath: /data
