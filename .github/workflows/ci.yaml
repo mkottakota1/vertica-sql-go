@@ -125,7 +125,7 @@ jobs:
           kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
             sh -c "mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
 
-      - name: Deploy VerticaDB (CI friendly: size 1)
+      - name: Deploy VerticaDB
         run: |
           cat <<'EOF' | kubectl apply -f -
           apiVersion: vertica.com/v1
