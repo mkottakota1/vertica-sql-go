@@ -228,4 +228,4 @@ jobs:
           go test ./... -v -args \
           --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
           --user dbadmin
-      "
+          "
