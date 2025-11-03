@@ -216,6 +216,15 @@ jobs:
             exit 1
           fi
 
+      - name: Debug Vertica pods and services
+        run: |
+         kubectl get pods -n my-verticadb-operator -o wide
+         kubectl describe pod -n my-verticadb-operator verticadb-sample-defaultsubcluster-0 || true
+         kubectl logs -n my-verticadb-operator verticadb-sample-defaultsubcluster-0 --all-containers --tail=200 || true
+         kubectl get svc -n my-verticadb-operator -o wide
+         kubectl describe svc -n my-verticadb-operator verticadb-sample-defaultsubcluster || true
+
+
       - name: Run Vertica SQL Go tests inside cluster
         run: |
           kubectl run go-test-runner \
