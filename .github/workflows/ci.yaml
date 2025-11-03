@@ -122,10 +122,11 @@ jobs:
         run: |
           NS=my-verticadb-operator
           kubectl create ns ${NS} || true
-          kubectl delete secret communal-creds -n ${NS} --ignore-not-found=true || true
-          kubectl create secret generic communal-creds -n ${NS} \
-            --from-literal=accesskey=minioadmin \
-            --from-literal=secretkey=minioadmin
+          kubectl delete secret communal-creds -n ${NS}
+          kubectl create secret generic communal-creds \
+          -n my-verticadb-operator \
+          --from-literal=AWS_ACCESS_KEY_ID=minio \
+          --from-literal=AWS_SECRET_ACCESS_KEY=miniopassn
           kubectl get secret communal-creds -n ${NS} -o yaml || true
 
       # Step 7: Ensure MinIO bucket exists
