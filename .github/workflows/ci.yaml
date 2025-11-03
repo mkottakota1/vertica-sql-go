@@ -149,10 +149,10 @@ jobs:
 
           kubectl get secret communal-creds -n ${VERTICA_NS} -o yaml || true
 
-      - name: Ensure MinIO bucket exists (for communal)
+      - name: Ensure MinIO bucket exists (awscli pod)
         run: |
-          kubectl run --rm -i --restart=Never awscli --image=amazon/aws-cli -n my-verticadb-operator -- \
-            sh -c "aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3api create-bucket --bucket vertica-bucket || true"
+          kubectl run --rm -i --restart=Never awscli --image=amazon/aws-cli -n my-verticadb-operator --command -- \
+          sh -c 'aws --endpoint-url http://minio.minio.svc.cluster.local:9000 s3api create-bucket --bucket vertica-bucket || true'
 
       # Deploy VerticaDB pointing communal to MinIO
       - name: Deploy VerticaDB (communal -> MinIO)
