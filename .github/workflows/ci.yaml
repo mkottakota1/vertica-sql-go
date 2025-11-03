@@ -138,16 +138,21 @@ jobs:
       - name: Wait for MinIO readiness and verify access
         run: |
           echo "🕓 Waiting for MinIO to become ready..."
-          # Wait for the MinIO service to respond on port 9000
           for i in {1..30}; do
-            if kubectl run minio-test --rm -i --restart=Never --image=quay.io/curl/curl -n my-verticadb-operator \
-              -- curl -s -o /dev/null -w "%{http_code}" http://minio.minio.svc.cluster.local:9000 | grep -q "403"; then
-              echo "✅ MinIO is reachable and responding!"
+            STATUS=$(kubectl run minio-test --rm -i --restart=Never --image=quay.io/curl/curl -n my-verticadb-operator \
+              -- curl -s -o /dev/null -w "%{http_code}" http://minio.minio.svc.cluster.local:9000 || true)
+            if [ "$STATUS" = "403" ] || [ "$STATUS" = "200" ]; then
+              echo "✅ MinIO is reachable and responding (HTTP $STATUS)"
               break
             fi
-            echo "⏳ MinIO not yet ready (attempt $i/30)... retrying in 10s"
+            echo "⏳ MinIO not ready yet (attempt $i/30)..."
             sleep 10
           done
+
+          echo "🔐 Verifying MinIO credentials using minio/mc..."
+          kubectl run minio-creds-check --rm -i --restart=Never --image=minio/mc -n my-verticadb-operator -- \
+            mc alias set myminio http://minio.minio.svc.cluster.local:9000 minio miniopass && \
+            mc ls myminio || echo '⚠️ Could not list buckets (but login may still be OK)'
 
           # Verify credentials work via MinIO client
           echo "🔐 Verifying MinIO credentials..."
