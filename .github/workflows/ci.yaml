@@ -106,11 +106,15 @@ jobs:
             kubectl describe pods -n my-verticadb-operator
           }
 
-      # Step 9: Wait for Vertica readiness
       - name: Check Vertica readiness
         run: |
           echo "🧠 Checking Vertica container health..."
-          POD=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/component=database -o jsonpath='{.items[0].metadata.name}')
+          POD=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/name=vertica -o jsonpath='{.items[0].metadata.name}' || echo "")
+          if [ -z "$POD" ]; then
+            echo "❌ No Vertica pods found. Listing for debug..."
+            kubectl get pods -n my-verticadb-operator
+            exit 1
+          fi
           echo "📦 Checking pod: $POD"
           for i in {1..30}; do
             if kubectl exec -n my-verticadb-operator $POD -c nma -- curl -sk http://localhost:8080/v2/health | grep -q "UP"; then
@@ -121,13 +125,20 @@ jobs:
             sleep 10
           done
 
+
       # Step 10: Verify Vertica version
       - name: Check Vertica version
         run: |
           echo "🔍 Checking Vertica version..."
-          POD=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/component=database -o jsonpath='{.items[0].metadata.name}')
+          POD=$(kubectl get pods -n my-verticadb-operator -l app.kubernetes.io/name=vertica -o jsonpath='{.items[0].metadata.name}' || echo "")
+          if [ -z "$POD" ]; then
+            echo "❌ No Vertica pods found. Listing for debug..."
+            kubectl get pods -n my-verticadb-operator
+            exit 1
+          fi
           echo "📦 Running version query on $POD"
           kubectl exec -n my-verticadb-operator $POD -c server -- bash -c "/opt/vertica/bin/vsql -U dbadmin -c 'SELECT version();'"
+
 
       # Step 11: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
