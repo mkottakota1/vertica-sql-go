@@ -122,7 +122,6 @@ jobs:
         run: |
           NS=my-verticadb-operator
           kubectl create ns ${NS} || true
-          kubectl delete secret communal-creds -n ${NS}
           kubectl create secret generic communal-creds \
           -n my-verticadb-operator \
           --from-literal=AWS_ACCESS_KEY_ID=minio \
