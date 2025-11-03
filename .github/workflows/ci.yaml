@@ -36,48 +36,52 @@ jobs:
         run: |
           kubectl create ns minio || true
           cat <<'EOF' > minio.yaml
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: minio
-            namespace: minio
-          spec:
-            replicas: 1
-            selector:
-              matchLabels: { app: minio }
-            template:
-              metadata:
-                labels: { app: minio }
-              spec:
-                containers:
-                - name: minio
-                  image: minio/minio:RELEASE.2023-09-01T00-00-00Z
-                  args: ["server","/data"]
-                  env:
-                  - name: MINIO_ROOT_USER
-                    value: "minio"
-                  - name: MINIO_ROOT_PASSWORD
-                    value: "miniopass"
-                  ports:
-                  - containerPort: 9000
-                  volumeMounts:
-                  - name: data
-                    mountPath: /data
-                volumes:
-                - name: data
-                  emptyDir: {}
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: minio
-            namespace: minio
-          spec:
-            selector: { app: minio }
-            ports:
-            - port: 9000
-              targetPort: 9000
-          EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: minio/minio:RELEASE.2023-09-01T00-00-00Z
+        args: ["server","/data"]
+        env:
+        - name: MINIO_ROOT_USER
+          value: "minio"
+        - name: MINIO_ROOT_PASSWORD
+          value: "miniopass"
+        ports:
+        - containerPort: 9000
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: minio
+spec:
+  selector:
+    app: minio
+  ports:
+  - port: 9000
+    targetPort: 9000
+EOF
+
           kubectl apply -f minio.yaml
           kubectl -n minio rollout status deployment/minio --timeout=2m || true
           kubectl get pods -n minio -o wide || true
@@ -88,17 +92,18 @@ jobs:
           NAMESPACE=my-verticadb-operator
           MINIO_ENDPOINT=http://minio.minio.svc.cluster.local:9000
           kubectl create ns ${NAMESPACE} || true
-          cat <<EOF > operator-values.yaml
-          installCRDs: true
-          controller:
-            extraEnv:
-              - name: S3_ENDPOINT
-                value: "${MINIO_ENDPOINT}"
-              - name: S3_USE_HTTPS
-                value: "false"
-              - name: S3_REGION
-                value: "us-east-1"
-          EOF
+          cat <<'EOF' > operator-values.yaml
+installCRDs: true
+controller:
+  extraEnv:
+    - name: S3_ENDPOINT
+      value: "http://minio.minio.svc.cluster.local:9000"
+    - name: S3_USE_HTTPS
+      value: "false"
+    - name: S3_REGION
+      value: "us-east-1"
+EOF
+
           helm upgrade --install vdb-op vertica-charts/verticadb-operator -n ${NAMESPACE} -f operator-values.yaml --wait --timeout 10m
           kubectl -n ${NAMESPACE} get pods -o wide || true
           kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=100 || true
@@ -122,27 +127,27 @@ jobs:
 
       - name: Deploy VerticaDB (CI friendly: size 1)
         run: |
-          cat <<EOF | kubectl apply -f -
-          apiVersion: vertica.com/v1
-          kind: VerticaDB
-          metadata:
-            name: verticadb-sample
-            namespace: my-verticadb-operator
-          spec:
-            image: opentext/vertica-k8s:latest
-            dbName: vdb
-            initPolicy: Create
-            communal:
-              path: "s3://vertica-bucket"
-              credentialSecret: communal-creds
-            local:
-              dataPath: /data
-              depotPath: /depot
-            subclusters:
-              - name: defaultsubcluster
-                size: 1
-          EOF
-          # trigger reconcile immediately
+          cat <<'EOF' | kubectl apply -f -
+apiVersion: vertica.com/v1
+kind: VerticaDB
+metadata:
+  name: verticadb-sample
+  namespace: my-verticadb-operator
+spec:
+  image: opentext/vertica-k8s:latest
+  dbName: vdb
+  initPolicy: Create
+  communal:
+    path: "s3://vertica-bucket"
+    credentialSecret: communal-creds
+  local:
+    dataPath: /data
+    depotPath: /depot
+  subclusters:
+    - name: defaultsubcluster
+      size: 1
+EOF
+
           kubectl annotate verticadb verticadb-sample -n my-verticadb-operator vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
 
       - name: Wait for VerticaCRD registration
@@ -191,7 +196,6 @@ jobs:
             kubectl logs ${POD} -n ${NS} --all-containers --tail=500 || true
             kubectl logs -n ${NS} -l control-plane=controller-manager --tail=500 || true
             kubectl get events -n ${NS} --sort-by='.lastTimestamp' | tail -n50 || true
-            # show whether startup.json exists and some startup log
             kubectl exec -n ${NS} ${POD} -c server -- sh -c 'ls -la /tmp/startup /opt/vertica/log || true; if [ -f /tmp/startup/startup.json ]; then echo "=== startup.json ==="; sed -n "1,200p" /tmp/startup/startup.json || true; else echo "startup.json missing"; fi' || true
             exit 1
           }
@@ -226,15 +230,15 @@ jobs:
             --rm -i --restart=Never \
             --image=golang:1.20 \
             --namespace=my-verticadb-operator \
-            -- bash -c "$(cat <<'EOF'
-              set -e
-              git clone https://github.com/mkottakota1/vertica-sql-go /src || true
-              cd /src || true
-              go test ./... -v -args \
-                --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
-                --user dbadmin
-            EOF
-            )"
+            -- bash -c "$(cat <<'EOS'
+set -e
+git clone https://github.com/mkottakota1/vertica-sql-go /src || true
+cd /src || true
+go test ./... -v -args \
+  --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
+  --user dbadmin
+EOS
+)"
 
       - name: Save final diagnostics (always)
         if: always()
