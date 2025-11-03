@@ -134,7 +134,32 @@ jobs:
           kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
             sh -c "mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
 
-      # Step 8: Deploy VerticaDB
+      # Step 8: Wait for MinIO readiness and verify access
+      - name: Wait for MinIO readiness and verify access
+        run: |
+          echo "🕓 Waiting for MinIO to become ready..."
+          # Wait for the MinIO service to respond on port 9000
+          for i in {1..30}; do
+            if kubectl run minio-test --rm -i --restart=Never --image=quay.io/curl/curl -n my-verticadb-operator \
+              -- curl -s -o /dev/null -w "%{http_code}" http://minio.minio.svc.cluster.local:9000 | grep -q "403"; then
+              echo "✅ MinIO is reachable and responding!"
+              break
+            fi
+            echo "⏳ MinIO not yet ready (attempt $i/30)... retrying in 10s"
+            sleep 10
+          done
+
+          # Verify credentials work via MinIO client
+          echo "🔐 Verifying MinIO credentials..."
+          kubectl run minio-creds-check --rm -i --restart=Never --image=minio/mc -n my-verticadb-operator -- \
+            sh -c "
+              mc alias set myminio http://minio.minio.svc.cluster.local:9000 minio miniopass || exit 1
+              echo '✅ Credentials accepted by MinIO server!'
+              mc ls myminio || echo 'ℹ️ Bucket list failed (expected if none exist yet)'
+            "
+
+
+      # Step 9: Deploy VerticaDB
       - name: Deploy VerticaDB
         run: |
           cat <<'EOF' | kubectl apply -f -
@@ -159,7 +184,7 @@ jobs:
           EOF
           kubectl annotate verticadb verticadb-sample -n my-verticadb-operator vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
 
-      # Step 9: Wait for Vertica Operator and Pod readiness
+      # Step 10: Wait for Vertica Operator and Pod readiness
       - name: Wait for Vertica Operator and Pod readiness
         run: |
           NS=my-verticadb-operator
@@ -186,7 +211,7 @@ jobs:
           echo "🔍 Checking if MinIO is reachable..."
           kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://minio.minio.svc.cluster.local:9000 || true
 
-      # Step 10: Run Vertica SQL Go tests inside the cluster
+      # Step 11: Run Vertica SQL Go tests inside the cluster
       - name: Run Vertica SQL Go tests inside cluster
         run: |
           kubectl run go-test-runner \
@@ -203,7 +228,7 @@ jobs:
           EOS
           )"
 
-      # Step 11: Save diagnostics
+      # Step 12: Save diagnostics
       - name: Save final diagnostics (always)
         if: always()
         run: |
