@@ -35,62 +35,8 @@ jobs:
           helm repo add bitnami https://charts.bitnami.com/bitnami || true
           helm repo update
 
-      # Step 4: Install MinIO for communal storage
-      - name: Install MinIO (namespace minio)
-        run: |
-          kubectl create ns minio || true
-          cat <<'EOF' > minio.yaml
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: minio
-            namespace: minio
-          spec:
-            replicas: 1
-            selector:
-              matchLabels:
-                app: minio
-            template:
-              metadata:
-                labels:
-                  app: minio
-              spec:
-                containers:
-                  - name: minio
-                    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
-                    args: ["server", "/data"]
-                    env:
-                      - name: MINIO_ROOT_USER
-                        value: "minio"
-                      - name: MINIO_ROOT_PASSWORD
-                        value: "miniopass"
-                    ports:
-                      - containerPort: 9000
-                    volumeMounts:
-                      - name: data
-                        mountPath: /data
-                volumes:
-                  - name: data
-                    emptyDir: {}
-          ---
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: minio
-            namespace: minio
-          spec:
-            selector:
-              app: minio
-            ports:
-              - port: 9000
-                targetPort: 9000
-          EOF
-          kubectl apply -f minio.yaml
-          kubectl -n minio rollout status deployment/minio --timeout=2m || true
-          kubectl get pods -n minio -o wide || true
-          kubectl get svc -n minio || true
-
-      # Step 5: Configure and install Vertica Operator
+      
+      # Step 4: Configure and install Vertica Operator
       - name: Install Vertica Operator (configure S3 endpoint)
         run: |
           NAMESPACE=my-verticadb-operator
@@ -100,7 +46,7 @@ jobs:
           controller:
             extraEnv:
               - name: S3_ENDPOINT
-                value: "http://minio.minio.svc.cluster.local:9000"
+                value: "http://10.20.80.150:9000"
               - name: S3_USE_HTTPS
                 value: "false"
               - name: S3_REGION
@@ -130,97 +76,10 @@ jobs:
           namespace: my-verticadb-operator
          type: Opaque
          stringData:
-          AWS_ACCESS_KEY_ID: minio
-          AWS_SECRET_ACCESS_KEY: miniopass
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
          EOF
          kubectl get secret communal-creds -n my-verticadb-operator -o yaml
-
-          
-
-            # 🧩 Step 5.5: Deploy MinIO (S3-compatible storage for communal path)
-      - name: Deploy MinIO
-        run: |
-          echo "🪣 Deploying MinIO (S3-compatible communal storage)..."
-          kubectl create namespace my-verticadb-operator --dry-run=client -o yaml | kubectl apply -f -
-
-          cat <<'EOF' | kubectl apply -n my-verticadb-operator -f -
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: minio
-          spec:
-            ports:
-              - port: 9000
-                targetPort: 9000
-            selector:
-              app: minio
-          ---
-          apiVersion: apps/v1
-          kind: Deployment
-          metadata:
-            name: minio
-          spec:
-            selector:
-              matchLabels:
-                app: minio
-            template:
-              metadata:
-                labels:
-                  app: minio
-              spec:
-                containers:
-                  - name: minio
-                    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
-                    args: ["server", "/data"]
-                    env:
-                      - name: MINIO_ROOT_USER
-                        value: "minio"
-                      - name: MINIO_ROOT_PASSWORD
-                        value: "miniopass"
-                    ports:
-                      - containerPort: 9000
-                    volumeMounts:
-                      - name: data
-                        mountPath: /data
-                volumes:
-                  - name: data
-                    emptyDir: {}
-          EOF
-
-      # Step 5.6: Wait for MinIO to become ready
-      - name: Wait for MinIO
-        run: |
-          echo "Waiting for MinIO to become ready..."
-          for i in {1..30}; do
-            READY=$(kubectl get pods -n my-verticadb-operator -l app=minio -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
-            if [ "$READY" == "true" ]; then
-              echo "MinIO is ready!"
-              kubectl get svc minio -n my-verticadb-operator
-              break
-            fi
-            echo "MinIO not ready yet (attempt $i/30)..."
-            sleep 10
-          done
-          if [ "$READY" != "true" ]; then
-            echo "MinIO never became ready. Showing logs..."
-            kubectl logs -n my-verticadb-operator -l app=minio --tail=100
-            exit 1
-          fi
-
-
-      # Step 6: Ensure MinIO bucket exists
-      - name: Ensure MinIO bucket exists
-        run: |
-          kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
-            sh -c "mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
-
-      - name: Debug MinIO access from inside cluster
-        run: |
-          echo "🔍 Testing MinIO credentials inside cluster..."
-          kubectl run minio-test --rm -i --restart=Never --image=minio/mc -n my-verticadb-operator --command -- \
-          /bin/sh -c "
-          mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass && \
-          mc ls local || exit 1"
 
       # Step 9: Deploy VerticaDB
       - name: Deploy VerticaDB
@@ -237,8 +96,8 @@ jobs:
             initPolicy: Create
             
             communal:
-              path: s3://vertica-bucket
-              endpoint: "http://minio.my-verticadb-operator.svc.cluster.local:9000"
+              path: s3://vdb
+              endpoint: "http://10.20.80.150:46353"
               credentialSecret: communal-creds
             local:
               dataPath: /data
@@ -274,7 +133,7 @@ jobs:
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c vertica || true
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c server-logger || true
           echo "🔍 Checking if MinIO is reachable..."
-          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://minio.minio.svc.cluster.local:9000 || true
+          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://10.20.80.150:46353 || true
 
       # Step 11: Run Vertica SQL Go tests inside the cluster
       - name: Run Vertica SQL Go tests inside cluster
