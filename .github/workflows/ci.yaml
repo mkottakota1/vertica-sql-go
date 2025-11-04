@@ -82,7 +82,7 @@ jobs:
             -n my-verticadb-operator \
             --env AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
             --env AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-            --command -- aws s3 ls s3://vertica-fleeting/mkottakota --region us-east-1
+            --command -- aws s3 ls s3://vertica-fleeting/mkottakota/ --region us-east-1
           echo "✅ AWS S3 access verified"
 
       # Step 7: Deploy VerticaDB using AWS S3
@@ -99,7 +99,7 @@ jobs:
             dbName: vdb
             initPolicy: Create
             communal:
-              path: s3://vertica-fleeting/mkottakota
+              path: s3://vertica-fleeting/mkottakota/
               credentialSecret: communal-creds
               region: us-east-1
             local:
@@ -129,21 +129,35 @@ jobs:
             sleep 10
           done
 
-          kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
+          kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=2m || true
           kubectl get pods -n ${NS} -o wide || true
 
-      # Step 9: Debug Vertica pod on failure
-      - name: Debug Vertica Pod State
+      # Step 9: Debug Vertica pod and operator on failure
+      - name: Debug Vertica Pod and Operator State
         if: always()
         run: |
-          echo "🔎 Collecting Vertica logs and describe output..."
+          echo "🔎 Collecting Vertica pod logs and describe output..."
           kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=200 || true
-          echo "🔍 Testing AWS S3 connectivity..."
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=300 || true
+
+          echo ""
+          echo "🧩 Collecting Vertica Operator logs..."
+          kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=300 || true
+          echo ""
+          kubectl get pods -n my-verticadb-operator -o wide || true
+
+          echo ""
+          echo "🔍 Testing AWS S3 connectivity from inside cluster..."
           kubectl run s3-test --rm -i --restart=Never \
-          --image=amazon/aws-cli:2.15.0 \
-          -n my-verticadb-operator \
-          -- bash -c "aws s3 ls s3://vertica-fleeting/mkottakota --region us-east-1" || true
+            --image=amazon/aws-cli:2.15.0 \
+            -n my-verticadb-operator \
+            --env AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --env AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+            --command -- bash -c "aws s3 ls s3://vertica-fleeting/mkottakota --region us-east-1" || true
+
+          echo ""
+          echo "✅ Debug collection complete — see above logs for Vertica and Operator behavior."
+
 
       # Step 10: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
