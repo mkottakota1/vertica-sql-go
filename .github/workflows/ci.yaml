@@ -133,7 +133,7 @@ jobs:
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c vertica || true
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c server-logger || true
           echo "🔍 Checking if MinIO is reachable..."
-          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://10.20.80.150:46353 || true
+          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://10.20.80.150:9000 || true
 
       # Step 11: Run Vertica SQL Go tests inside the cluster
       - name: Run Vertica SQL Go tests inside cluster
