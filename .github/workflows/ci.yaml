@@ -161,8 +161,7 @@ jobs:
           # how long to wait (seconds)
           WAIT_TIMEOUT=300
           INTERVAL=5
-	      
-          echo "Waiting for Service ${SVC} endpoints to be populated..."
+
           deadline=$((SECONDS + WAIT_TIMEOUT))
           while [ $SECONDS -lt $deadline ]; do
             # endpoints addresses non-empty check
