@@ -79,14 +79,13 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          kubectl run s3-test --rm -i --restart=Never \
-            --image=amazon/aws-cli:2.15.0 \
-            -n my-verticadb-operator \
-            --from-literal=AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
-            --from-literal=AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-            --from-literal=accesskey="${AWS_ACCESS_KEY_ID}" \
-            --from-literal=secretkey="${AWS_SECRET_ACCESS_KEY}" \
-            --command -- aws s3 ls s3://vertica-fleeting/mkottakota/ --region us-east-1
+          NS=my-verticadb-operator
+          kubectl -n ${NS} delete secret communal-creds --ignore-not-found
+          kubectl -n ${NS} run s3-test --restart=Never --rm \
+          --image=amazon/aws-cli:2.15.0 \
+          --env AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+          --env AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+          --command -- aws s3 ls s3://vertica-fleeting/mkottakota/ --region us-east-1
           echo "✅ AWS S3 access verified"
 
       # Step 7: Deploy VerticaDB using AWS S3
