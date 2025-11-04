@@ -122,11 +122,8 @@ jobs:
         run: |
           NS=my-verticadb-operator
           kubectl create ns ${NS} || true
-          kubectl create secret generic communal-creds \
-          -n my-verticadb-operator \
-          --from-literal=AWS_ACCESS_KEY_ID=minio \
-          --from-literal=AWS_SECRET_ACCESS_KEY=miniopassn
-          kubectl get secret communal-creds -n ${NS} -o yaml || true
+          kubectl delete 
+          kubectl create secret generic s3-creds --from-literal=accesskey=minioadmin --from-literal=secretkey=minioadmin
 
             # 🧩 Step 5.5: Deploy MinIO (S3-compatible storage for communal path)
       - name: Deploy MinIO
@@ -178,22 +175,22 @@ jobs:
                     emptyDir: {}
           EOF
 
-      # ✅ Step 5.6: Wait for MinIO to become ready
+      # Step 5.6: Wait for MinIO to become ready
       - name: Wait for MinIO
         run: |
-          echo "🕓 Waiting for MinIO to become ready..."
+          echo "Waiting for MinIO to become ready..."
           for i in {1..30}; do
             READY=$(kubectl get pods -n my-verticadb-operator -l app=minio -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || echo "false")
             if [ "$READY" == "true" ]; then
-              echo "✅ MinIO is ready!"
+              echo "MinIO is ready!"
               kubectl get svc minio -n my-verticadb-operator
               break
             fi
-            echo "⏳ MinIO not ready yet (attempt $i/30)..."
+            echo "MinIO not ready yet (attempt $i/30)..."
             sleep 10
           done
           if [ "$READY" != "true" ]; then
-            echo "❌ MinIO never became ready. Showing logs..."
+            echo "MinIO never became ready. Showing logs..."
             kubectl logs -n my-verticadb-operator -l app=minio --tail=100
             exit 1
           fi
@@ -219,10 +216,11 @@ jobs:
             image: opentext/vertica-k8s:latest
             dbName: vdb
             initPolicy: Create
+            
             communal:
-              path: "s3://vertica-bucket"
+              path: s3://vertica-bucket
               endpoint: "http://minio.my-verticadb-operator.svc.cluster.local:9000"
-              credentialSecret: communal-creds
+              credentialSecret: s3-creds
             local:
               dataPath: /data
               depotPath: /depot
