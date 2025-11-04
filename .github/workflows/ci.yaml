@@ -129,7 +129,7 @@ jobs:
             sleep 10
           done
 
-          kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=2m || true
+          kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
           kubectl get pods -n ${NS} -o wide || true
 
       # Step 9: Debug Vertica pod and operator on failure
@@ -142,7 +142,10 @@ jobs:
 
           echo ""
           echo "🧩 Collecting Vertica Operator logs..."
-          kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=300 || true
+          # Try standard label first; fallback to explicit name if not found
+          kubectl logs -n my-verticadb-operator -l app.kubernetes.io/name=verticadb-operator --tail=300 || \
+          kubectl logs -n my-verticadb-operator verticadb-operator-manager-65986596dd-2jczc --tail=300 || true
+
           echo ""
           kubectl get pods -n my-verticadb-operator -o wide || true
 
