@@ -97,7 +97,7 @@ jobs:
             
             communal:
               path: s3://vdb
-              endpoint: "http://10.20.80.150:46353"
+              endpoint: "http://10.20.80.150:9000"
               credentialSecret: communal-creds
             local:
               dataPath: /data
