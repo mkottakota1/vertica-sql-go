@@ -146,77 +146,77 @@ jobs:
           echo ""
           echo "✅ Debug collection complete — see above logs for Vertica and Operator behavior."
 
-        # Step 10: Run Vertica SQL Go tests
-  - name: Run Vertica SQL Go tests
-    run: |
-      NS=my-verticadb-operator
-      SVC=verticadb-sample-defaultsubcluster
-      LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
-      WAIT_TIMEOUT=300
-      INTERVAL=5
+      # Step 10: Run Vertica SQL Go tests
+      - name: Run Vertica SQL Go tests
+        run: |
+          NS=my-verticadb-operator
+          SVC=verticadb-sample-defaultsubcluster
+          LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
+          WAIT_TIMEOUT=300
+          INTERVAL=5
 
-      echo "Waiting for Service ${SVC} endpoints to be populated..."
-      deadline=$((SECONDS + WAIT_TIMEOUT))
-      while [ $SECONDS -lt $deadline ]; do
-        addrs=$(kubectl -n ${NS} get endpoints ${SVC} -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
-        if [ -n "$addrs" ]; then
-          echo "Found endpoints: ${addrs}"
-          break
-        fi
-        echo "no endpoints yet; sleeping ${INTERVAL}s"
-        sleep ${INTERVAL}
-      done
+          echo "Waiting for Service ${SVC} endpoints to be populated..."
+          deadline=$((SECONDS + WAIT_TIMEOUT))
+          while [ $SECONDS -lt $deadline ]; do
+            addrs=$(kubectl -n ${NS} get endpoints ${SVC} -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null || true)
+            if [ -n "$addrs" ]; then
+              echo "Found endpoints: ${addrs}"
+              break
+            fi
+            echo "no endpoints yet; sleeping ${INTERVAL}s"
+            sleep ${INTERVAL}
+          done
 
-      if [ -z "$addrs" ]; then
-        echo "ERROR: Service ${SVC} has no endpoints after ${WAIT_TIMEOUT}s"
-        kubectl -n ${NS} get svc ${SVC} -o wide || true
-        kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
-        exit 1
-      fi
+          if [ -z "$addrs" ]; then
+            echo "ERROR: Service ${SVC} has no endpoints after ${WAIT_TIMEOUT}s"
+            kubectl -n ${NS} get svc ${SVC} -o wide || true
+            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
+            exit 1
+          fi
 
-      echo "Probing TCP 5433 on service DNS ${LOCATOR} from inside cluster..."
-      probe_ok=0
-      deadline=$((SECONDS + WAIT_TIMEOUT))
-      while [ $SECONDS -lt $deadline ]; do
-        kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}" && probe_ok=1 && break
-        echo "TCP probe failed; retrying in ${INTERVAL}s"
-        sleep ${INTERVAL}
-      done
+          echo "Probing TCP 5433 on service DNS ${LOCATOR} from inside cluster..."
+          probe_ok=0
+          deadline=$((SECONDS + WAIT_TIMEOUT))
+          while [ $SECONDS -lt $deadline ]; do
+            kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}" && probe_ok=1 && break
+            echo "TCP probe failed; retrying in ${INTERVAL}s"
+            sleep ${INTERVAL}
+          done
 
-      if [ "${probe_ok}" != "1" ]; then
-        echo "WARNING: Service TCP probe to ${LOCATOR} failed."
-        kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
-        exit 1
-      fi
+          if [ "${probe_ok}" != "1" ]; then
+            echo "WARNING: Service TCP probe to ${LOCATOR} failed."
+            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
+            exit 1
+          fi
 
-      echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
+          echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
 
-      # Create test script
-      cat > go_test_script.sh <<'EOS'
-      #!/bin/bash
-      set -euo pipefail
-      echo "Running go tests using mounted source..."
-      cd /workspace
-      go mod tidy
-      go test ./... -v -args \
-        --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
-        --user dbadmin
-      EOS
+          # Create test script
+          cat > go_test_script.sh <<'EOS'
+          #!/bin/bash
+          set -euo pipefail
+          echo "Running go tests using mounted source..."
+          cd /workspace
+          go mod tidy
+          go test ./... -v -args \
+            --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
+            --user dbadmin
+          EOS
 
-      chmod +x go_test_script.sh
+          chmod +x go_test_script.sh
 
-      # Copy current repo into a temporary tarball
-      tar -czf vertica-sql-go-src.tar.gz .
+          # Copy current repo into a temporary tarball
+          tar -czf vertica-sql-go-src.tar.gz .
 
-      # Create a Kubernetes pod that runs Go tests using your local source
-      kubectl -n ${NS} run go-test-runner \
-        --rm -i --restart=Never \
-        --image=golang:1.20 \
-        -- /bin/sh -c "
-          mkdir -p /workspace &&
-          tar -xzf - -C /workspace &&
-          /bin/sh /workspace/go_test_script.sh
-        " < vertica-sql-go-src.tar.gz
+          # Create a Kubernetes pod that runs Go tests using your local source
+          kubectl -n ${NS} run go-test-runner \
+            --rm -i --restart=Never \
+            --image=golang:1.20 \
+            -- /bin/sh -c "
+              mkdir -p /workspace &&
+              tar -xzf - -C /workspace &&
+              /bin/sh /workspace/go_test_script.sh
+            " < vertica-sql-go-src.tar.gz
 
       # Step 11: Final Diagnostics
       - name: Save final diagnostics
