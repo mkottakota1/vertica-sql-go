@@ -146,7 +146,7 @@ jobs:
           echo ""
           echo "✅ Debug collection complete — see above logs for Vertica and Operator behavior."
 
-    # Step 10: Run Vertica SQL Go tests
+      # Step 10: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests
         run: |
           NS=my-verticadb-operator
@@ -194,25 +194,24 @@ jobs:
             exit 1
           fi
 
-           echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
+          echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
 
-           # Clone repo inside pod to run Go tests
-           kubectl -n ${NS} run go-test-runner \
-             --rm -i --restart=Never \
-             --image=golang:1.21 \
-             -- bash -c "$(cat <<'EOS'
-           set -euo pipefail
-           echo "Cloning Vertica SQL Go repository..."
-           git clone https://github.com/vertica/vertica-sql-go.git
-           cd vertica-sql-go
-           go mod tidy
-           echo "Running Go tests..."
-           go test ./... -v -args \
-             --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
-             --user dbadmin
-           EOS
-           )"
-
+          # Run tests inside a Go pod
+          kubectl -n ${NS} run go-test-runner \
+            --rm -i --restart=Never \
+            --image=golang:1.21 \
+            --command -- /bin/bash -c '
+              set -euo pipefail
+              echo "Cloning Vertica SQL Go repository..."
+              git clone https://github.com/vertica/vertica-sql-go.git
+              cd vertica-sql-go
+              echo "Running go mod tidy..."
+              go mod tidy
+              echo "Running Go tests..."
+              go test ./... -v -args \
+                --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
+                --user dbadmin
+            '
 
       # Step 11: Final Diagnostics
       - name: Save final diagnostics
