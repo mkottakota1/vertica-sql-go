@@ -175,26 +175,49 @@ jobs:
           fi
 
           echo "Probing TCP 5433 on service DNS ${LOCATOR} from inside cluster..."
-          kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}"
+          probe_ok=0
+          deadline=$((SECONDS + WAIT_TIMEOUT))
+          while [ $SECONDS -lt $deadline ]; do
+            kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}" && probe_ok=1 && break
+            echo "TCP probe failed; retrying in ${INTERVAL}s"
+            sleep ${INTERVAL}
+          done
+
+          if [ "${probe_ok}" != "1" ]; then
+            echo "WARNING: Service TCP probe to ${LOCATOR} failed. Dumping diagnostics."
+            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
+            for ip in $addrs; do
+              echo "---- testing pod IP ${ip}:5433 ----"
+              kubectl -n ${NS} run --rm -i --restart=Never tmp-nc-${ip//./-} --image=busybox -- /bin/sh -c "nc -z -w3 ${ip} 5433" || true
+            done
+            exit 1
+          fi
+
           echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
 
-          # Create test runner pod
-          kubectl -n ${NS} run go-test-runner --restart=Never --image=golang:1.20 --command -- sleep infinity
+          # Create Go test runner pod
+          kubectl -n ${NS} run go-test-runner \
+            --image=golang:1.20 \
+            --restart=Never -- sleep infinity
           kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
 
-          # ✅ Copy current Go source into pod safely (ignore tar warnings)
-          tar cf - . --warning=no-file-changed | kubectl -n ${NS} exec -i go-test-runner -- tar xf - || true
+          # Copy Go source into pod
+          echo "Copying Go source into pod..."
+          kubectl -n ${NS} exec -i go-test-runner -- mkdir -p /workspace
+          tar cf - . --warning=no-file-changed | kubectl -n ${NS} exec -i go-test-runner -- tar xf - -C /workspace
 
-          # Run tests inside pod
-          kubectl -n ${NS} exec go-test-runner -- bash -c "
-            set -e
-            cd /workspace || mkdir -p /workspace && cd /workspace
+          # Run Go tests inside pod
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
+            set -euo pipefail
+            cd /workspace
             go mod tidy
-            go test ./... -v -args --locator ${LOCATOR} --user dbadmin
+            go test ./... -v -args \
+              --locator ${LOCATOR} \
+              --user dbadmin
           "
 
-          # Cleanup
-          kubectl -n ${NS} delete pod go-test-runner --ignore-not-found
+          # Clean up pod
+          kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
 
       # Step 11: Final Diagnostics
       - name: Save final diagnostics
