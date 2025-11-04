@@ -76,8 +76,8 @@ jobs:
           namespace: my-verticadb-operator
          type: Opaque
          stringData:
-          AWS_ACCESS_KEY_ID: minioadmin
-          AWS_SECRET_ACCESS_KEY: minioadmin
+          access_key: minioadmin
+          secretkey: minioadmin
          EOF
          kubectl get secret communal-creds -n my-verticadb-operator -o yaml
 
