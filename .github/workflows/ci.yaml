@@ -62,10 +62,19 @@ jobs:
         run: |
           kubectl create secret generic communal-creds \
             -n my-verticadb-operator \
-            --from-literal=AWS_ACCESS_KEY_ID= dummy \
-            --from-literal=AWS_SECRET_ACCESS_KEY=dummy || true
+            --from-literal=AWS_ACCESS_KEY_ID= ${{ secrets.AWS_ACCESS_KEY_ID }} \
+            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} || true
 
           kubectl get secret communal-creds -n my-verticadb-operator -o yaml || true
+
+      - name: Test AWS S3 access
+        run: |
+          kubectl run s3-test --rm -i --restart=Never \
+          --image=amazon/aws-cli \
+          --namespace=my-verticadb-operator \
+          --env AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
+          --env AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
+          -- aws s3 ls s3:vertica-fleeting/mkottakota --region us-east-1
 
       # Step 6: Deploy VerticaDB (using AWS S3)
       - name: Deploy VerticaDB
