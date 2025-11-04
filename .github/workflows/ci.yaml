@@ -118,12 +118,24 @@ jobs:
           kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=100 || true
 
       # Step 6: Create communal secret for Vertica
-      - name: Create communal secret
+      - name: Create namespace and communal secret
         run: |
-          NS=my-verticadb-operator
-          kubectl create ns ${NS} || true
-          kubectl delete 
-          kubectl create secret generic s3-creds --from-literal=accesskey=minioadmin --from-literal=secretkey=minioadmin
+         set -e
+         kubectl get namespace my-verticadb-operator || kubectl create namespace my-verticadb-operator
+         kubectl apply -f - <<EOF
+         apiVersion: v1
+         kind: Secret
+         metadata:
+          name: communal-creds
+          namespace: my-verticadb-operator
+         type: Opaque
+         stringData:
+          AWS_ACCESS_KEY_ID: minio
+          AWS_SECRET_ACCESS_KEY: miniopass
+         EOF
+         kubectl get secret communal-creds -n my-verticadb-operator -o yaml
+
+          
 
             # 🧩 Step 5.5: Deploy MinIO (S3-compatible storage for communal path)
       - name: Deploy MinIO
@@ -220,7 +232,7 @@ jobs:
             communal:
               path: s3://vertica-bucket
               endpoint: "http://minio.my-verticadb-operator.svc.cluster.local:9000"
-              credentialSecret: s3-creds
+              credentialSecret: communal-creds
             local:
               dataPath: /data
               depotPath: /depot
