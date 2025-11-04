@@ -169,55 +169,23 @@ jobs:
 
           if [ -z "$addrs" ]; then
             echo "ERROR: Service ${SVC} has no endpoints after ${WAIT_TIMEOUT}s"
-            kubectl -n ${NS} get svc ${SVC} -o wide || true
-            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
-            exit 1
-          fi
-
-          echo "Probing TCP 5433 on service DNS ${LOCATOR} from inside cluster..."
-          probe_ok=0
-          deadline=$((SECONDS + WAIT_TIMEOUT))
-          while [ $SECONDS -lt $deadline ]; do
-            kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}" && probe_ok=1 && break
-            echo "TCP probe failed; retrying in ${INTERVAL}s"
-            sleep ${INTERVAL}
-          done
-
-          if [ "${probe_ok}" != "1" ]; then
-            echo "WARNING: Service TCP probe to ${LOCATOR} failed. Dumping diagnostics."
-            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
-            for ip in $addrs; do
-              echo "---- testing pod IP ${ip}:5433 ----"
-              kubectl -n ${NS} run --rm -i --restart=Never tmp-nc-${ip//./-} --image=busybox -- /bin/sh -c "nc -z -w3 ${ip} 5433" || true
-            done
             exit 1
           fi
 
           echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
-
-          # Create Go test runner pod
-          kubectl -n ${NS} run go-test-runner \
-            --image=golang:1.20 \
-            --restart=Never -- sleep infinity
-          kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
-
-          # Copy Go source into pod
-          echo "Copying Go source into pod..."
-          kubectl -n ${NS} exec -i go-test-runner -- mkdir -p /workspace
-          tar cf - . --warning=no-file-changed | kubectl -n ${NS} exec -i go-test-runner -- tar xf - -C /workspace
-
-          # Run Go tests inside pod
-          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
-            set -euo pipefail
-            cd /workspace
+          kubectl -n ${NS} run go-test-runner --restart=Never --image=golang:1.20 -i --rm -- bash -c "
+            set -euxo pipefail
+            mkdir -p /workspace && cd /workspace
+            echo 'Copying Go source into pod...'
+            tar cf - . --warning=no-file-changed | tar xf -
             go mod tidy
-            go test ./... -v -args \
-              --locator ${LOCATOR} \
-              --user dbadmin
-          "
 
-          # Clean up pod
-          kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
+            echo 'Running driver-specific tests with connection args...'
+            go test github.com/vertica/vertica-sql-go -v -args --locator ${LOCATOR} --user dbadmin
+
+            echo 'Running other package tests without connection args...'
+            go test github.com/vertica/vertica-sql-go/common github.com/vertica/vertica-sql-go/logger github.com/vertica/vertica-sql-go/msgs github.com/vertica/vertica-sql-go/parse github.com/vertica/vertica-sql-go/rowcache -v
+          "
 
       # Step 11: Final Diagnostics
       - name: Save final diagnostics
