@@ -35,57 +35,52 @@ jobs:
           helm repo add bitnami https://charts.bitnami.com/bitnami || true
           helm repo update
 
-      # Step 4: Install Vertica Operator (AWS S3 mode)
-      - name: Install Vertica Operator
+      # Step 4: Configure and install Vertica Operator
+      - name: Install Vertica Operator (configure S3 endpoint)
         run: |
           NAMESPACE=my-verticadb-operator
           kubectl create ns ${NAMESPACE} || true
-
           cat <<'EOF' > operator-values.yaml
           installCRDs: true
           controller:
             extraEnv:
+              - name: S3_ENDPOINT
+                value: "http://10.5.244.42:9000"
+              - name: S3_USE_HTTPS
+                value: "false"
+              - name: S3_REGION
+                value: "us-east-1"
+              - name: S3_FORCE_PATH_STYLE
+                value: "true"
               - name: AWS_REGION
                 value: "us-east-1"
               - name: AWS_DEFAULT_REGION
                 value: "us-east-1"
           EOF
-
           helm upgrade --install vdb-op vertica-charts/verticadb-operator \
             -n ${NAMESPACE} -f operator-values.yaml --wait --timeout 10m
-
           kubectl -n ${NAMESPACE} get pods -o wide || true
           kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=100 || true
 
-      # Step 5: Create AWS S3 credentials as Kubernetes secret
-      - name: Create AWS S3 Secret
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Step 5: Create communal secret for Vertica
+      - name: Create communal secret
         run: |
-          kubectl delete secret communal-creds -n my-verticadb-operator --ignore-not-found
+          NS=my-verticadb-operator
+          kubectl create ns ${NS} || true
           kubectl create secret generic communal-creds \
-            -n my-verticadb-operator \
-            --from-literal=AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
-            --from-literal=AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-          echo "✅ Created AWS secret communal-creds"
-          kubectl get secret communal-creds -n my-verticadb-operator -o yaml || true
+          -n my-verticadb-operator \
+          --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
+          --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin
+          kubectl get secret communal-creds -n ${NS} -o yaml || true
+		  
 
-      # Step 6: Verify AWS S3 connectivity
-      - name: Verify AWS S3 access from within cluster
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      # Step 7: Ensure MinIO bucket exists
+      - name: Ensure MinIO bucket exists
         run: |
-          kubectl run s3-test --rm -i --restart=Never \
-            --image=amazon/aws-cli:2.15.0 \
-            -n my-verticadb-operator \
-            --env AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID} \
-            --env AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY} \
-            --command -- aws s3 ls s3://vertica-fleeting/mkottakota/ --region us-east-1
-          echo "✅ AWS S3 access verified"
+          kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
+            sh -c "mc alias set local http://10.5.244.42:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
 
-      # Step 7: Deploy VerticaDB using AWS S3
+      # Step 8: Deploy VerticaDB
       - name: Deploy VerticaDB
         run: |
           cat <<'EOF' | kubectl apply -f -
@@ -99,9 +94,8 @@ jobs:
             dbName: vdb
             initPolicy: Create
             communal:
-              path: s3://vertica-fleeting/mkottakota/
+              path: "s3://vertica-bucket"
               credentialSecret: communal-creds
-              region: us-east-1
             local:
               dataPath: /data
               depotPath: /depot
@@ -109,61 +103,37 @@ jobs:
               - name: defaultsubcluster
                 size: 3
           EOF
+          kubectl annotate verticadb verticadb-sample -n my-verticadb-operator vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
 
-          kubectl annotate verticadb verticadb-sample -n my-verticadb-operator \
-            vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
-
-      # Step 8: Wait for Vertica readiness
+      # Step 9: Wait for Vertica Operator and Pod readiness
       - name: Wait for Vertica Operator and Pod readiness
         run: |
           NS=my-verticadb-operator
           SS=verticadb-sample-defaultsubcluster
           POD=${SS}-0
-
-          echo "🕓 Waiting for Vertica StatefulSet..."
+          echo "Waiting for Vertica StatefulSet..."
           for i in {1..30}; do
             if kubectl get pod ${POD} -n ${NS} >/dev/null 2>&1; then
-              echo "✅ Pod exists"
+              echo "Pod exists"
               break
             fi
             sleep 10
           done
-
           kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
           kubectl get pods -n ${NS} -o wide || true
 
-      # Step 9: Debug Vertica pod and operator on failure
-      - name: Debug Vertica Pod and Operator State
+      - name: Debug Vertica Pod State
         if: always()
         run: |
-          echo "🔎 Collecting Vertica pod logs and describe output..."
+          echo "🔎 Collecting Vertica container logs and describe output..."
           kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=300 || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c vertica || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c server-logger || true
+          echo "🔍 Checking if MinIO is reachable..."
+          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://10.5.244.42:9000 || true
 
-          echo ""
-          echo "🧩 Collecting Vertica Operator logs..."
-          # Try standard label first; fallback to explicit name if not found
-          kubectl logs -n my-verticadb-operator -l app.kubernetes.io/name=verticadb-operator --tail=300 || \
-          kubectl logs -n my-verticadb-operator verticadb-operator-manager-65986596dd-2jczc --tail=300 || true
-
-          echo ""
-          kubectl get pods -n my-verticadb-operator -o wide || true
-
-          echo ""
-          echo "🔍 Testing AWS S3 connectivity from inside cluster..."
-          kubectl run s3-test --rm -i --restart=Never \
-            --image=amazon/aws-cli:2.15.0 \
-            -n my-verticadb-operator \
-            --env AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
-            --env AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} \
-            --command -- bash -c "aws s3 ls s3://vertica-fleeting/mkottakota --region us-east-1" || true
-
-          echo ""
-          echo "✅ Debug collection complete — see above logs for Vertica and Operator behavior."
-
-
-      # Step 10: Run Vertica SQL Go tests
-      - name: Run Vertica SQL Go tests
+      # Step 10: Run Vertica SQL Go tests inside the cluster
+      - name: Run Vertica SQL Go tests inside cluster
         run: |
           kubectl run go-test-runner \
             --rm -i --restart=Never \
@@ -179,8 +149,8 @@ jobs:
           EOS
           )"
 
-      # Step 11: Final Diagnostics
-      - name: Save final diagnostics
+      # Step 11: Save diagnostics
+      - name: Save final diagnostics (always)
         if: always()
         run: |
           kubectl get pods -n my-verticadb-operator -o wide || true
