@@ -177,7 +177,7 @@ jobs:
             set -euxo pipefail
             mkdir -p /workspace && cd /workspace
             echo 'Copying Go source into pod...'
-            tar cf - . --warning=no-file-changed | tar xf -
+            tar cf - . --warning=no-file-changed | kubectl -n ${NS} exec -i go-test-runner -- tar xf - -C /workspace
             go mod tidy
 
             echo 'Running driver-specific tests with connection args...'
