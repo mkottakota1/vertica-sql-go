@@ -207,10 +207,13 @@ jobs:
               cd vertica-sql-go
               echo "Running go mod tidy..."
               go mod tidy
-              echo "Running Go tests..."
-              go test ./... -v -args \
-                --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
-                --user dbadmin
+              echo "Running Vertica SQL Go driver tests..."
+              go test ./ -v -args \
+              --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
+              --user dbadmin
+
+              echo "Running other package tests..."
+              go test $(go list ./... | grep -v '/vertica-sql-go$') -v
             '
 
       # Step 11: Final Diagnostics
