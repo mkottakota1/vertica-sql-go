@@ -62,8 +62,8 @@ jobs:
         run: |
           kubectl create secret generic communal-creds \
             -n my-verticadb-operator \
-            --from-literal=AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }} \
-            --from-literal=AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }} || true
+            --from-literal=AWS_ACCESS_KEY_ID= dummy \
+            --from-literal=AWS_SECRET_ACCESS_KEY=dummy || true
 
           kubectl get secret communal-creds -n my-verticadb-operator -o yaml || true
 
@@ -81,7 +81,7 @@ jobs:
             dbName: vdb
             initPolicy: Create
             communal:
-              path: s3://vgarg/10/
+              path: s3://vertica-fleeting/mkottakota
               credentialSecret: communal-creds
               region: us-east-1
             local:
