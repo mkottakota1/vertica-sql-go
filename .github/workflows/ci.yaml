@@ -175,48 +175,26 @@ jobs:
           fi
 
           echo "Probing TCP 5433 on service DNS ${LOCATOR} from inside cluster..."
-          probe_ok=0
-          deadline=$((SECONDS + WAIT_TIMEOUT))
-          while [ $SECONDS -lt $deadline ]; do
-            kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}" && probe_ok=1 && break
-            echo "TCP probe failed; retrying in ${INTERVAL}s"
-            sleep ${INTERVAL}
-          done
-
-          if [ "${probe_ok}" != "1" ]; then
-            echo "WARNING: Service TCP probe to ${LOCATOR} failed."
-            kubectl -n ${NS} get endpoints ${SVC} -o yaml || true
-            exit 1
-          fi
-
+          kubectl -n ${NS} run --rm -i --restart=Never tmp-netcheck --image=busybox -- /bin/sh -c "nc -z -w3 ${LOCATOR%%:*} ${LOCATOR##*:}"
           echo "✅ TCP 5433 reachable at ${LOCATOR}. Running Vertica SQL Go tests inside cluster..."
 
-          # Create test script
-          cat > go_test_script.sh <<'EOS'
-          #!/bin/bash
-          set -euo pipefail
-          echo "Running go tests using mounted source..."
-          cd /workspace
-          go mod tidy
-          go test ./... -v -args \
-            --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
-            --user dbadmin
-          EOS
+          # Create test runner pod
+          kubectl -n ${NS} run go-test-runner --restart=Never --image=golang:1.20 --command -- sleep infinity
+          kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
 
-          chmod +x go_test_script.sh
+          # ✅ Copy current Go source into pod safely (ignore tar warnings)
+          tar cf - . --warning=no-file-changed | kubectl -n ${NS} exec -i go-test-runner -- tar xf - || true
 
-          # Copy current repo into a temporary tarball
-          tar -czf vertica-sql-go-src.tar.gz .
+          # Run tests inside pod
+          kubectl -n ${NS} exec go-test-runner -- bash -c "
+            set -e
+            cd /workspace || mkdir -p /workspace && cd /workspace
+            go mod tidy
+            go test ./... -v -args --locator ${LOCATOR} --user dbadmin
+          "
 
-          # Create a Kubernetes pod that runs Go tests using your local source
-          kubectl -n ${NS} run go-test-runner \
-            --rm -i --restart=Never \
-            --image=golang:1.20 \
-            -- /bin/sh -c "
-              mkdir -p /workspace &&
-              tar -xzf - -C /workspace &&
-              /bin/sh /workspace/go_test_script.sh
-            " < vertica-sql-go-src.tar.gz
+          # Cleanup
+          kubectl -n ${NS} delete pod go-test-runner --ignore-not-found
 
       # Step 11: Final Diagnostics
       - name: Save final diagnostics
