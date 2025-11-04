@@ -40,7 +40,8 @@ jobs:
         run: |
           NAMESPACE=my-verticadb-operator
           kubectl create ns ${NAMESPACE} || true
-          cat <<'EOF' > operator-values.yaml
+
+          cat <<EOF > operator-values.yaml
           installCRDs: true
           controller:
             extraEnv:
@@ -57,8 +58,10 @@ jobs:
               - name: AWS_DEFAULT_REGION
                 value: "us-east-1"
           EOF
+
           helm upgrade --install vdb-op vertica-charts/verticadb-operator \
             -n ${NAMESPACE} -f operator-values.yaml --wait --timeout 10m
+
           kubectl -n ${NAMESPACE} get pods -o wide || true
           kubectl logs -n ${NAMESPACE} -l control-plane=controller-manager --tail=100 || true
 
@@ -68,22 +71,23 @@ jobs:
           NS=my-verticadb-operator
           kubectl create ns ${NS} || true
           kubectl create secret generic communal-creds \
-          -n my-verticadb-operator \
-          --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
-          --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin
+            -n ${NS} \
+            --from-literal=AWS_ACCESS_KEY_ID=minioadmin \
+            --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin \
+            --dry-run=client -o yaml | kubectl apply -f -
           kubectl get secret communal-creds -n ${NS} -o yaml || true
-		  
 
-      # Step 7: Ensure MinIO bucket exists
+      # Step 6: Ensure MinIO bucket exists
       - name: Ensure MinIO bucket exists
         run: |
-          kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
-            sh -c "mc alias set local http://10.5.244.42:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
+          kubectl run --rm -i --restart=Never mc \
+            --image=minio/mc -n my-verticadb-operator --command -- \
+            sh -c "mc alias set local http://10.5.244.42:9000 minioadmin minioadmin >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
 
-      # Step 8: Deploy VerticaDB
+      # Step 7: Deploy VerticaDB (with endpoint)
       - name: Deploy VerticaDB
         run: |
-          cat <<'EOF' | kubectl apply -f -
+          cat <<EOF | kubectl apply -f -
           apiVersion: vertica.com/v1
           kind: VerticaDB
           metadata:
@@ -95,7 +99,11 @@ jobs:
             initPolicy: Create
             communal:
               path: "s3://vertica-bucket"
+              endpoint: "http://10.5.244.42:9000"
               credentialSecret: communal-creds
+              region: "us-east-1"
+              useHTTP: true
+              usePathStyle: true
             local:
               dataPath: /data
               depotPath: /depot
@@ -103,36 +111,35 @@ jobs:
               - name: defaultsubcluster
                 size: 3
           EOF
-          kubectl annotate verticadb verticadb-sample -n my-verticadb-operator vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
 
-      # Step 9: Wait for Vertica Operator and Pod readiness
-      - name: Wait for Vertica Operator and Pod readiness
+          kubectl annotate verticadb verticadb-sample -n my-verticadb-operator \
+            vertica.com/ci-reconcile="$(date -u +%s)" --overwrite || true
+
+      # Step 8: Wait for Vertica readiness
+      - name: Wait for Vertica Pods
         run: |
           NS=my-verticadb-operator
-          SS=verticadb-sample-defaultsubcluster
-          POD=${SS}-0
-          echo "Waiting for Vertica StatefulSet..."
-          for i in {1..30}; do
-            if kubectl get pod ${POD} -n ${NS} >/dev/null 2>&1; then
-              echo "Pod exists"
-              break
-            fi
-            sleep 10
-          done
-          kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
+          echo "⏳ Waiting for Vertica pods to start..."
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/component=database \
+            -n ${NS} --timeout=600s || true
           kubectl get pods -n ${NS} -o wide || true
 
+      # Step 9: Debug Vertica Pod State
       - name: Debug Vertica Pod State
         if: always()
         run: |
-          echo "🔎 Collecting Vertica container logs and describe output..."
+          echo "🔎 Collecting Vertica pod logs and describe output..."
           kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c vertica || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -c server-logger || true
-          echo "🔍 Checking if MinIO is reachable..."
-          kubectl exec verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator -- curl -v http://10.5.244.42:9000 || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=300 || true
+          echo "🔍 Testing MinIO S3 connectivity..."
+          kubectl run s3-test --rm -i --restart=Never \
+            --image=amazon/aws-cli:2.15.0 \
+            -n my-verticadb-operator \
+            --env AWS_ACCESS_KEY_ID=minioadmin \
+            --env AWS_SECRET_ACCESS_KEY=minioadmin \
+            --command -- aws s3 ls s3://vertica-bucket --endpoint-url http://10.5.244.42:9000 --region us-east-1 || true
 
-      # Step 10: Run Vertica SQL Go tests inside the cluster
+      # Step 10: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests inside cluster
         run: |
           kubectl run go-test-runner \
@@ -142,7 +149,7 @@ jobs:
             -- bash -c "$(cat <<'EOS'
           set -e
           git clone https://github.com/mkottakota1/vertica-sql-go /src || true
-          cd /src || true
+          cd /src
           go test ./... -v -args \
             --locator verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433 \
             --user dbadmin
@@ -153,8 +160,11 @@ jobs:
       - name: Save final diagnostics (always)
         if: always()
         run: |
-          kubectl get pods -n my-verticadb-operator -o wide || true
-          kubectl get svc -n my-verticadb-operator -o wide || true
-          kubectl get endpoints -n my-verticadb-operator || true
-          kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=500 || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
+          echo "🧩 Collecting final diagnostics..."
+          NS=my-verticadb-operator
+          kubectl get pods -n ${NS} -o wide || true
+          kubectl get svc -n ${NS} -o wide || true
+          kubectl get endpoints -n ${NS} || true
+          kubectl logs -n ${NS} -l control-plane=controller-manager --tail=500 || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n ${NS} --all-containers --tail=500 || true
+          echo "✅ Debug collection complete"
