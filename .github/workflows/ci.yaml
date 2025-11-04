@@ -213,7 +213,14 @@ jobs:
         run: |
           kubectl run --rm -i --restart=Never mc --image=minio/mc -n my-verticadb-operator --command -- \
             sh -c "mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass >/dev/null 2>&1 && mc mb --ignore-existing local/vertica-bucket || true"
-            
+
+      - name: Debug MinIO access from inside cluster
+        run: |
+          echo "🔍 Testing MinIO credentials inside cluster..."
+          kubectl run minio-test --rm -i --restart=Never --image=minio/mc -n my-verticadb-operator --command -- \
+          /bin/sh -c "
+          mc alias set local http://minio.minio.svc.cluster.local:9000 minio miniopass && \
+          mc ls local || exit 1"
 
       # Step 9: Deploy VerticaDB
       - name: Deploy VerticaDB
