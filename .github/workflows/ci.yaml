@@ -187,9 +187,14 @@ jobs:
             set -euo pipefail
             cd /workspace
             go mod tidy
-            go test ./... -v -args \
-              --locator ${LOCATOR} \
-              --user dbadmin
+            # Run main tests that need flags
+            go test -v -race . -args --locator ${LOCATOR} --user dbadmin
+
+           # Run all other subpackages ignoring flags
+           for pkg in $(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
+             go test -v -race "$pkg"
+           done
+
           "
           # Clean up pod
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
