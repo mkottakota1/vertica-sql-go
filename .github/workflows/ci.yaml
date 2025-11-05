@@ -204,32 +204,25 @@ jobs:
               GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;
             \"
           "
-
-      # Configure TLS
-      - name: Configure Vertica TLS
-        run: |
-          NS=my-verticadb-operator
-          POD=verticadb-sample-defaultsubcluster-0
-          openssl req -x509 -nodes -days 1 -newkey rsa:2048 \
-            -subj "/CN=vertica/O=CI" \
-            -keyout tls.key -out tls.crt
-          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
-            /opt/vertica/bin/vsql -U dbadmin -c \"
-              CREATE CA CERTIFICATE root_ca AS '$(cat tls.crt)';
-              CREATE KEY server_key TYPE 'RSA' AS '$(cat tls.key)';
-              CREATE CERTIFICATE server AS '$(cat tls.crt)' KEY server_key;
-              ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
-            \"
-          "
       - name: Generate TLS certs on runner
         run: ./resources/tests/genCerts.sh
 
       - name: Inspect server certificate SANs
         run: |
-          NS=my-verticadb-operator
-          kubectl -n ${NS} exec go-test-runner -- \
-          openssl x509 -in /workspace/resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
+          openssl x509 -in resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
 
+      - name: Configure Vertica TLS
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
+          /opt/vertica/bin/vsql -U dbadmin -c \"
+          CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
+          CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
+          CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
+          ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
+          \"
+          "
         
       # Run Vertica SQL Go tests (Normal + OAuth + TLS)
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
