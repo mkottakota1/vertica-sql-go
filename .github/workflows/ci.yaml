@@ -221,7 +221,9 @@ jobs:
               ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
             \"
           "
-
+      - name: Generate TLS certs on runner
+        run: ./resources/tests/genCerts.sh
+        
       # Run Vertica SQL Go tests (Normal + OAuth + TLS)
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
         run: |
