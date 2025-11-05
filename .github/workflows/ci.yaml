@@ -261,7 +261,7 @@ jobs:
            | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
-            go test -v -race . -args --locator '${LOCATOR}' --auth oauth
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin 
             for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
               go test -v -race \"\$pkg\" --auth oauth
             done
