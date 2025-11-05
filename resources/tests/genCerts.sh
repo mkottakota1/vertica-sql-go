@@ -57,6 +57,8 @@ extendedKeyUsage = serverAuth
 subjectAltName = @dns_names
 [dns_names]
 DNS.1 = ${CN}
+DNS.2 = localhost
+DNS.3 = verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local
 EOF
 
 echo "Generating server.key"
