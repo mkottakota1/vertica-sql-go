@@ -274,7 +274,7 @@ jobs:
 
             echo '=== Running TLS Tests (custom mode) ==='
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
-            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom --use_prepared_statements=0
 
           "
 
