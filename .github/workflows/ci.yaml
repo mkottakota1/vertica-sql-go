@@ -255,9 +255,11 @@ jobs:
             done
 
             echo '=== Running OAuth Tests ==='
-            TOKEN=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
-              -d 'client_id=vertica' -d 'username=oauth_user' -d 'password=password' -d 'grant_type=password' \
-              -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' | jq -r .access_token)
+           TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
+           -d 'client_id=vertica' -d 'username=oauth_user' -d 'password=password' -d 'grant_type=password' \
+           -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' \
+           | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
             go test -v -race . -args --locator '${LOCATOR}' --auth oauth
             for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
