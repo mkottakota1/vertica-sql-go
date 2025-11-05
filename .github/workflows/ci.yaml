@@ -252,7 +252,7 @@ jobs:
           '
       - name: Run OAuth Go tests
         run: |
-          cd /src
+          cd /workspace
           LOCATOR="verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433"
           TOKEN=$(curl -s -X POST http://localhost:8080/realms/test/protocol/openid-connect/token \
             -d "client_id=vertica" -d "username=oauth_user" -d "password=password" -d "grant_type=password" \
@@ -266,7 +266,7 @@ jobs:
 
       - name: Run TLS Go tests
         run: |
-          cd /src
+          cd /workspace
           LOCATOR="verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433"
           go test -v -race . -args --locator "${LOCATOR}" --user dbadmin --tlsmode=server
           for pkg in $(go list ./... | grep -v "github.com/vertica/vertica-sql-go$"); do
