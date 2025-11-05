@@ -223,6 +223,13 @@ jobs:
           "
       - name: Generate TLS certs on runner
         run: ./resources/tests/genCerts.sh
+
+      - name: Inspect server certificate SANs
+        run: |
+          NS=my-verticadb-operator
+          kubectl -n ${NS} exec go-test-runner -- \
+          openssl x509 -in /workspace/resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
+
         
       # Run Vertica SQL Go tests (Normal + OAuth + TLS)
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
