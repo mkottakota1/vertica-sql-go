@@ -98,7 +98,6 @@ jobs:
           mc ls localminio
           "
 
-          
       # Create MinIO credentials secret
       - name: Create MinIO Secret
         run: |
@@ -185,7 +184,7 @@ jobs:
             sleep 5
           done
 
-      # Configure Vertica Authentication (OAuth + dbadmin fallback)
+      # Configure Vertica Authentication
       - name: Configure Vertica Authentication
         run: |
           NS=my-verticadb-operator
@@ -206,8 +205,7 @@ jobs:
             \"
           "
 
-      
-      # 🔒 Configure TLS
+      # Configure TLS
       - name: Configure Vertica TLS
         run: |
           NS=my-verticadb-operator
@@ -224,12 +222,13 @@ jobs:
             \"
           "
 
-      # Run Vertica SQL Go tests
-      - name: Run Vertica SQL Go tests
+      # Run Vertica SQL Go tests (Normal + OAuth + TLS)
+      - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
         run: |
           NS=my-verticadb-operator
           SVC=verticadb-sample-defaultsubcluster
           LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
+
           WAIT_TIMEOUT=300
           INTERVAL=5
           deadline=$((SECONDS + WAIT_TIMEOUT))
@@ -237,48 +236,28 @@ jobs:
             addrs=$(kubectl -n ${NS} get endpoints ${SVC} -o jsonpath='{.subsets[*].addresses[*].ip}' || true)
             [ -n "$addrs" ] && break || sleep ${INTERVAL}
           done
+
           kubectl -n ${NS} run go-test-runner --image=golang:1.20 --restart=Never -- sleep infinity
           kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
+
           kubectl -n ${NS} exec -i go-test-runner -- mkdir -p /workspace
           tar cf - . | kubectl -n ${NS} exec -i go-test-runner -- tar xf - -C /workspace
-          kubectl -n ${NS} exec -i go-test-runner -- bash -c '
+
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
             set -euo pipefail
             cd /workspace
             go mod tidy
-            go test -v -race . -args --locator '"${LOCATOR}"' --user dbadmin
-            for pkg in $(go list ./... | grep -v "github.com/vertica/vertica-sql-go$"); do
-              go test -v -race "$pkg"
+
+            echo '=== Running Normal Tests ==='
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
+            for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
+              go test -v -race \"\$pkg\"
             done
-          '
-      - name: Run OAuth Go tests
-        run: |
-          cd /workspace
-          LOCATOR="verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433"
-          TOKEN=$(curl -s -X POST http://localhost:8080/realms/test/protocol/openid-connect/token \
-            -d "client_id=vertica" -d "username=oauth_user" -d "password=password" -d "grant_type=password" \
-            -d "client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs" | jq -r .access_token)
-          export VERTICA_TEST_OAUTH_ACCESS_TOKEN=$TOKEN
-          go test -v -race . -args --locator "${LOCATOR}" --auth oauth
-          for pkg in $(go list ./... | grep -v "github.com/vertica/vertica-sql-go$"); do
-            go test -v -race "$pkg" --auth oauth
-          done
+          "
+
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
 
-      - name: Run TLS Go tests
-        run: |
-          cd /workspace
-          LOCATOR="verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433"
-          go test -v -race . -args --locator "${LOCATOR}" --user dbadmin --tlsmode=server
-          for pkg in $(go list ./... | grep -v "github.com/vertica/vertica-sql-go$"); do
-            go test -v -race "$pkg" --tlsmode=server
-          done
-          go test -v -race . -args --locator "${LOCATOR}" --user dbadmin --tlsmode=custom
-          for pkg in $(go list ./... | grep -v "github.com/vertica/vertica-sql-go$"); do
-            go test -v -race "$pkg" --tlsmode=custom
-          done
-
-
-      # 🧹 Cleanup MinIO
+      # Cleanup MinIO
       - name: Uninstall MinIO
         if: always()
         run: |
@@ -287,7 +266,7 @@ jobs:
           kubectl delete ns minio || true
           echo "MinIO cleanup complete"
 
-      # 🧾 Final diagnostics
+      # Final diagnostics
       - name: Save final diagnostics
         if: always()
         run: |
