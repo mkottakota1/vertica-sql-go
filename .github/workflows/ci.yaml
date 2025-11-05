@@ -126,7 +126,8 @@ jobs:
       # Step 6: Wait for operator to be ready
       - name: Wait for operator ready
         run: |
-          kubectl wait --for=condition=Ready pods -l control-plane=controller-manager -n my-verticadb-operator --timeout=10m || true
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/component=manager -n my-verticadb-operator --timeout=10m || true
+
 
       # Step 7: Create communal secret for MinIO
       - name: Create communal secret for Vertica
@@ -177,8 +178,39 @@ jobs:
       # Step 10: Wait for Vertica pods ready
       - name: Wait for Vertica pods
         run: |
-          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=verticadb -n my-verticadb-operator --timeout=20m || true
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/component=manager -n my-verticadb-operator --timeout=5m || true
           kubectl get pods -n my-verticadb-operator -o wide || true
+
+            # Step 9: Debug Vertica pod and operator on failure
+      - name: Debug Vertica Pod and Operator State
+        if: always()
+        run: |
+          echo "🔎 Collecting Vertica pod logs and describe output..."
+          kubectl describe pod verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=300 || true
+
+          echo ""
+          echo "🧩 Collecting Vertica Operator logs..."
+          kubectl logs -n my-verticadb-operator -l app.kubernetes.io/name=verticadb-operator --tail=300 || \
+          kubectl logs -n my-verticadb-operator verticadb-operator-manager-65986596dd-2jczc --tail=300 || true
+
+          echo ""
+          echo "📋 Listing all pods in namespace..."
+          kubectl get pods -n my-verticadb-operator -o wide || true
+
+          echo ""
+          echo "🔍 Testing MinIO (S3-compatible) connectivity from inside cluster..."
+          kubectl run s3-test --rm -i --restart=Never \
+            --image=amazon/aws-cli:2.15.0 \
+            -n my-verticadb-operator \
+            --env AWS_ACCESS_KEY_ID=minioadmin \
+            --env AWS_SECRET_ACCESS_KEY=minioadmin \
+            --command -- bash -c \
+            "aws --endpoint-url http://minio.my-verticadb-operator.svc.cluster.local:9000 s3 ls s3://vertica-fleeting/mkottakota || echo '⚠️ MinIO not reachable inside cluster'" || true
+
+          echo ""
+          echo "✅ Debug collection complete — see above logs for Vertica and Operator behavior."
+
 
       # Step 11: Run Vertica SQL Go tests
       - name: Run Vertica SQL Go tests inside cluster
