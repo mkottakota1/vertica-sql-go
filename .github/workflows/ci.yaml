@@ -264,7 +264,7 @@ jobs:
           done
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
 
-            - name: Run TLS Go tests
+      - name: Run TLS Go tests
         run: |
           cd /src
           LOCATOR="verticadb-sample-defaultsubcluster.my-verticadb-operator.svc.cluster.local:5433"
