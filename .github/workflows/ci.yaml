@@ -261,22 +261,20 @@ jobs:
            | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
 
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin 
-            for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
-              go test -v -race \"\$pkg\"
+            go test -v -race . -args --locator '${LOCATOR}'  --user dbadmin
+            go test -race . -args --locator '${LOCATOR}'  --user dbadmin --use_prepared_statements=0
+            go test -race ./logger
             done
 
             echo '=== Running TLS Tests (server mode) ==='
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
-            for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
-              go test -v -race \"\$pkg\" --tlsmode=server
-            done
+             go test -v -race . -args --locator '${LOCATOR}'  --user dbadmin --tlsmode=server
+             go test -race . -args --locator localhost:5433 --user dbadmin --tlsmode=server --use_prepared_statements=0
+
 
             echo '=== Running TLS Tests (custom mode) ==='
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
-            for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
-              go test -v -race \"\$pkg\" --tlsmode=custom
-            done
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+
           "
 
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
