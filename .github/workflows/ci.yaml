@@ -32,35 +32,43 @@ jobs:
           helm repo add bitnami https://charts.bitnami.com/bitnami || true
           helm repo update
 
-      # 🚀 Deploy MinIO directly via manifest
-      - name: Deploy MinIO (direct manifest)
+      # Step 4: Install MinIO for communal storage
+      - name: Install MinIO (namespace minio)
         run: |
           kubectl create ns minio || true
-          cat <<'EOF' | kubectl apply -f -
-          apiVersion: v1
-          kind: Pod
+          cat <<'EOF' > minio.yaml
+          apiVersion: apps/v1
+          kind: Deployment
           metadata:
             name: minio
             namespace: minio
-            labels:
-              app: minio
           spec:
-            containers:
-              - name: minio
-                image: minio/minio:RELEASE.2024-01-01T00-00-00Z
-                args:
-                  - server
-                  - /data
-                  - --console-address
-                  - ":9001"
-                env:
-                  - name: MINIO_ROOT_USER
-                    value: minioadmin
-                  - name: MINIO_ROOT_PASSWORD
-                    value: minioadmin
-                ports:
-                  - containerPort: 9000
-                  - containerPort: 9001
+            replicas: 1
+            selector:
+              matchLabels:
+                app: minio
+            template:
+              metadata:
+                labels:
+                  app: minio
+              spec:
+                containers:
+                  - name: minio
+                    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+                    args: ["server", "/data"]
+                    env:
+                      - name: MINIO_ROOT_USER
+                        value: "minioadmin"
+                      - name: MINIO_ROOT_PASSWORD
+                        value: "minioadmin"
+                    ports:
+                      - containerPort: 9000
+                    volumeMounts:
+                      - name: data
+                        mountPath: /data
+                volumes:
+                  - name: data
+                    emptyDir: {}
           ---
           apiVersion: v1
           kind: Service
@@ -68,18 +76,17 @@ jobs:
             name: minio
             namespace: minio
           spec:
+            selector:
+              app: minio
             ports:
               - port: 9000
                 targetPort: 9000
-                name: api
-              - port: 9001
-                targetPort: 9001
-                name: console
-            selector:
-              app: minio
           EOF
-          kubectl rollout status pod/minio -n minio --timeout=5m
-
+          kubectl apply -f minio.yaml
+          kubectl -n minio rollout status deployment/minio --timeout=2m || true
+          kubectl get pods -n minio -o wide || true
+          kubectl get svc -n minio || true
+          
       # 🔐 Create MinIO credentials secret
       - name: Create MinIO Secret
         run: |
