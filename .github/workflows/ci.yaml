@@ -211,7 +211,7 @@ jobs:
       - name: Configure Vertica TLS
         run: |
           NS=my-verticadb-operator
-          POD=erticadb-sample-defaultsubcluster-0
+          POD=verticadb-sample-defaultsubcluster-0
           openssl req -x509 -nodes -days 1 -newkey rsa:2048 \
             -subj "/CN=vertica/O=CI" \
             -keyout tls.key -out tls.crt
