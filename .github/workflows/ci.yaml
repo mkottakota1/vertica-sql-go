@@ -2,9 +2,9 @@ name: Vertica SQL Go Build and Test (MinIO)
 
 on:
   push:
-    branches: [ main, vertica-buildsetup ]
+    branches: [main, vertica-buildsetup]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 jobs:
   build-test:
@@ -93,9 +93,9 @@ jobs:
             --image=minio/mc:latest \
             -n minio \
             --command -- bash -c "
-            mc alias set localminio http://minio.minio.svc.cluster.local:9000 minioadmin minioadmin && \
-            mc mb --ignore-existing localminio/vertica-fleeting && \
-            mc ls localminio
+              mc alias set localminio http://minio.minio.svc.cluster.local:9000 minioadmin minioadmin && \
+              mc mb --ignore-existing localminio/vertica-fleeting && \
+              mc ls localminio
             "
 
       # Create MinIO credentials secret
@@ -165,7 +165,7 @@ jobs:
           kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
 
       # Deploy Keycloak in K8s
-      - name: Deploy Keycloak in Kubernetes
+      - name: Deploy Keycloak
         run: |
           kubectl create ns keycloak || true
           cat <<'EOF' | kubectl apply -f -
@@ -199,9 +199,9 @@ jobs:
                       httpGet:
                         path: /
                         port: 8080
-                     initialDelaySeconds: 20
-                     periodSeconds: 5
-                     failureThreshold: 6
+                      initialDelaySeconds: 20
+                      periodSeconds: 5
+                      failureThreshold: 6
           ---
           apiVersion: v1
           kind: Service
@@ -215,8 +215,6 @@ jobs:
               - port: 8080
                 targetPort: 8080
           EOF
-          kubectl -n keycloak rollout status deployment/keycloak --timeout=2m
- 
 
       # Wait for Keycloak readiness
       - name: Wait for Keycloak readiness
@@ -228,26 +226,26 @@ jobs:
       - name: Configure Keycloak realm, client, and user
         run: |
           kubectl -n keycloak exec deploy/keycloak -- \
-          /opt/keycloak/bin/kcadm.sh config credentials \
-            --server http://localhost:8080 --realm master \
-            --user admin --password admin
+            /opt/keycloak/bin/kcadm.sh config credentials \
+              --server http://localhost:8080 --realm master \
+              --user admin --password admin
 
           kubectl -n keycloak exec deploy/keycloak -- \
-          /opt/keycloak/bin/kcadm.sh create realms -s realm=test -s enabled=true
-          
+            /opt/keycloak/bin/kcadm.sh create realms -s realm=test -s enabled=true
+
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh create clients -r test \
               -s clientId=vertica -s enabled=true \
               -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
               -s 'redirectUris=["*"]'
-          
+
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh create users -r test \
               -s username=oauth_user -s enabled=true
+
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh set-password -r test \
               --username oauth_user --new-password password
-      
 
       # Configure Vertica Authentication
       - name: Configure Vertica Authentication
@@ -283,14 +281,15 @@ jobs:
           NS=my-verticadb-operator
           POD=verticadb-sample-defaultsubcluster-0
           kubectl -n ${NS} exec ${POD} -c server -- bash -c "
-          /opt/vertica/bin/vsql -U dbadmin -c \"
-          CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
-          CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
-          CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
-          ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
-          \"
+            /opt/vertica/bin/vsql -U dbadmin -c \"
+              CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
+              CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
+              CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
+              ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
+            \"
           "
 
+      # Run Vertica SQL Go tests (Normal + OAuth + TLS)
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
         run: |
           NS=my-verticadb-operator
@@ -375,5 +374,4 @@ jobs:
           kubectl get svc -n my-verticadb-operator -o wide || true
           kubectl get endpoints -n my-verticadb-operator || true
           kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=500 || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
