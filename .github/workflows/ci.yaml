@@ -4,6 +4,7 @@ on: [push, pull_request]
 
 jobs:
   build:
+
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -17,7 +18,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-
+          
       - name: Set up Kubernetes (KinD)
         uses: helm/kind-action@v1.8.0
         with:
@@ -104,8 +105,8 @@ jobs:
       # Create MinIO credentials secret
       - name: Create MinIO Secret
         run: |
-          kubectl create ns my-verticadb-operator || true
           kubectl delete secret communal-creds -n my-verticadb-operator --ignore-not-found
+          kubectl create ns my-verticadb-operator || true
           kubectl create secret generic communal-creds \
             -n my-verticadb-operator \
             --from-literal=accesskey="minioadmin" \
@@ -167,7 +168,7 @@ jobs:
           done
           kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
 
-      # Deploy Keycloak
+      # Deploy Keycloak in K8s
       - name: Deploy Keycloak
         run: |
           kubectl create ns keycloak || true
@@ -224,6 +225,161 @@ jobs:
         run: |
           kubectl -n keycloak rollout status deploy/keycloak --timeout=2m
           kubectl -n keycloak get pods -o wide
+
+      # Configure Keycloak realm, client, and user
+      - name: Configure Keycloak realm, client, and user
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          SVC=verticadb-sample-defaultsubcluster
+          LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
+      
+          CLIENT_ID=vertica
+          CLIENT_SECRET=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs
+          REALM=test
+          USER=oauth_user
+          PASSWORD=password
+      
+          # Login to Keycloak admin
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh config credentials \
+              --server http://localhost:8080 --realm master \
+              --user admin --password admin
+      
+          # Create realm
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create realms -s realm=${REALM} -s enabled=true
+      
+          # Create client
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create clients -r ${REALM} \
+              -s clientId=${CLIENT_ID} \
+              -s enabled=true \
+              -s secret=${CLIENT_SECRET} \
+              -s 'redirectUris=["*"]' \
+              -s directAccessGrantsEnabled=true
+      
+          # Create user
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create users -r ${REALM} \
+              -s username=${USER} -s enabled=true
+      
+          # Set user password
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh set-password -r ${REALM} \
+              --username ${USER} --new-password ${PASSWORD}
+      
+          # Configure Vertica authentication
+          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
+            /opt/vertica/bin/vsql -U dbadmin -c \"
+              CREATE AUTHENTICATION v_oauth METHOD 'oauth' HOST '0.0.0.0/0';
+              ALTER AUTHENTICATION v_oauth SET client_id = '${CLIENT_ID}';
+              ALTER AUTHENTICATION v_oauth SET client_secret = '${CLIENT_SECRET}';
+              ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/${REALM}/.well-known/openid-configuration';
+              ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/${REALM}/protocol/openid-connect/token/introspect';
+              CREATE USER ${USER};
+              GRANT AUTHENTICATION v_oauth TO ${USER};
+              GRANT ALL ON SCHEMA PUBLIC TO ${USER};
+              CREATE AUTHENTICATION v_dbadmin_hash METHOD 'hash' HOST '0.0.0.0/0';
+              ALTER AUTHENTICATION v_dbadmin_hash PRIORITY 10000;
+              GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;
+            \"
+          "
+          
+          # Run tests without TLS
+          WAIT_TIMEOUT=300
+          INTERVAL=5
+          deadline=$((SECONDS + WAIT_TIMEOUT))
+          while [ $SECONDS -lt $deadline ]; do
+            addrs=$(kubectl -n ${NS} get endpoints ${SVC} -o jsonpath='{.subsets[*].addresses[*].ip}' || true)
+            [ -n "$addrs" ] && break || sleep ${INTERVAL}
+          done
+
+          kubectl -n ${NS} run go-test-runner --image=golang:${{ matrix.go-version }} --restart=Never -- sleep infinity
+          kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
+
+          kubectl -n ${NS} exec -i go-test-runner -- mkdir -p /workspace
+          tar cf - . | kubectl -n ${NS} exec -i go-test-runner -- tar xf - -C /workspace
+
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
+            set -euo pipefail
+            cd /workspace
+            go mod tidy
+
+            echo '=== Running OAuth Tests ==='
+            
+            # Retreving OAuth Access Token
+            RAW=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
+              -d 'client_id='${CLIENT_ID}'' \
+              -d 'username==${USER}' \
+              -d 'password=${PASSWORD}' \
+              -d 'grant_type=password' \
+              -d 'client_secret='${CLIENT_SECRET}'')
+
+            TOKEN=\$(echo \"\$RAW\" | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj.get(\"access_token\",\"\"))')
+
+            if [ -z \"\$TOKEN\" ]; then
+              echo 'No access_token in response, failing fast'
+              exit 1
+            fi
+
+            echo \"Token length: \${#TOKEN}\"
+            export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
+            go test -race ./logger
+          "
+          
+      # Generate TLS certs on runner
+      - name: Generate TLS certs on runner
+        run: ./resources/tests/genCerts.sh
+
+      - name: Inspect server certificate SANs
+        run: |
+          openssl x509 -in resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
+
+      # Configure and Enable TLS
+      - name: Configure Vertica TLS
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
+            /opt/vertica/bin/vsql -U dbadmin -c \"
+              CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
+              CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
+              CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
+              ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
+            \"
+          "
+
+      - name: Setting SSLCa in the database
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          LOCATOR="verticadb-sample-defaultsubcluster.${NS}.svc.cluster.local:5433"
+          kubectl -n ${NS} exec ${POD} -c server -- \
+            /opt/vertica/bin/vsql -U dbadmin -c \
+            "ALTER TLS CONFIGURATION server ADD CA CERTIFICATES root_ca TLSMODE 'VERIFY_CA';"
+
+          echo '=== Running TLS Tests (server mode) ==='
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
+            cd /workspace
+            echo '=== Running TLS Tests (custom mode) ==='
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom --use_prepared_statements=0
+          "
+
+      - name: Run Vertica SQL Go TLS custom tests
+        run: |
+          NS=my-verticadb-operator
+          LOCATOR="verticadb-sample-defaultsubcluster.${NS}.svc.cluster.local:5433"
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
+            cd /workspace
+            echo '=== Running TLS Tests (custom mode) ==='
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom --use_prepared_statements=0
+          "
+          kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
 
       # Cleanup MinIO
       - name: Uninstall MinIO
