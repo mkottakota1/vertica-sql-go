@@ -90,13 +90,13 @@ jobs:
       - name: Ensure MinIO bucket exists
         run: |
           kubectl run mc-client --rm -i --restart=Never \
-          --image=minio/mc:latest \
-          -n minio \
-          --command -- bash -c "
-          mc alias set localminio http://minio.minio.svc.cluster.local:9000 minioadmin minioadmin && \
-          mc mb --ignore-existing localminio/vertica-fleeting && \
-          mc ls localminio
-          "
+            --image=minio/mc:latest \
+            -n minio \
+            --command -- bash -c "
+            mc alias set localminio http://minio.minio.svc.cluster.local:9000 minioadmin minioadmin && \
+            mc mb --ignore-existing localminio/vertica-fleeting && \
+            mc ls localminio
+            "
 
       # Create MinIO credentials secret
       - name: Create MinIO Secret
@@ -191,25 +191,21 @@ jobs:
             --server http://localhost:8080 --realm master \
             --user admin --password admin
 
-          # Create realm 'test'
           docker exec keycloak /opt/keycloak/bin/kcadm.sh create realms \
             -s realm=test -s enabled=true
 
-          # Create client 'vertica' with matching secret
           docker exec keycloak /opt/keycloak/bin/kcadm.sh create clients -r test \
             -s clientId=vertica -s enabled=true \
             -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
             -s 'redirectUris=["*"]'
 
-          # Create user 'oauth_user' with password 'password'
           docker exec keycloak /opt/keycloak/bin/kcadm.sh create users -r test \
             -s username=oauth_user -s enabled=true
           docker exec keycloak /opt/keycloak/bin/kcadm.sh set-password -r test \
             --username oauth_user --new-password password
 
-
       # Configure Vertica Authentication
-            - name: Configure Vertica Authentication
+      - name: Configure Vertica Authentication
         run: |
           NS=my-verticadb-operator
           POD=verticadb-sample-defaultsubcluster-0
@@ -228,7 +224,8 @@ jobs:
               GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;
             \"
           "
-      # Generating TLS Certs & Inspect the SAN
+
+      # Generate TLS certs on runner
       - name: Generate TLS certs on runner
         run: ./resources/tests/genCerts.sh
 
@@ -248,7 +245,7 @@ jobs:
           ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
           \"
           "
-        
+
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
         run: |
           NS=my-verticadb-operator
@@ -314,7 +311,6 @@ jobs:
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom --use_prepared_statements=0
           "
-
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
 
       # Cleanup MinIO
