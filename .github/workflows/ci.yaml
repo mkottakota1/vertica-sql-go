@@ -195,6 +195,13 @@ jobs:
                         value: admin
                     ports:
                       - containerPort: 8080
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 8080
+                     initialDelaySeconds: 20
+                     periodSeconds: 5
+                     failureThreshold: 6
           ---
           apiVersion: v1
           kind: Service
@@ -215,19 +222,6 @@ jobs:
       - name: Wait for Keycloak readiness
         run: |
           kubectl -n keycloak rollout status deploy/keycloak --timeout=2m
-          kubectl -n keycloak get pods -o wide
-          
-          # Probe the HTTP endpoint inside the pod until it responds
-          for i in {1..30}; do
-            if kubectl -n keycloak exec deploy/keycloak -- curl -s http://localhost:8080 > /dev/null; then
-              echo "✅ Keycloak is serving requests"
-              break
-            fi
-            echo "⏳ Waiting for Keycloak to serve requests..."
-            sleep 5
-          done
-
-          # Show pod details for diagnostics
           kubectl -n keycloak get pods -o wide
 
       # Configure Keycloak realm, client, and user
@@ -335,7 +329,6 @@ jobs:
               | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
 
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=$TOKEN
-            echo "Token length: ${#VERTICA_TEST_OAUTH_ACCESS_TOKEN}"
             go test -v -race . -args --locator '${LOCATOR}' --user oauth_user
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
