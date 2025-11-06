@@ -164,45 +164,78 @@ jobs:
           done
           kubectl wait --for=condition=Ready pod/${POD} -n ${NS} --timeout=5m || true
 
-      # Run Keycloak container
-      - name: Run Keycloak
+      # Deploy Keycloak in K8s
+      - name: Deploy Keycloak in Kubernetes
         run: |
-          docker network create -d bridge my-network || true
-          docker run -d \
-            --name keycloak \
-            --network my-network \
-            -p 8080:8080 \
-            -e KEYCLOAK_ADMIN=admin \
-            -e KEYCLOAK_ADMIN_PASSWORD=admin \
-            quay.io/keycloak/keycloak:23.0.4 start-dev
-          echo "⏳ Waiting for Keycloak..."
-          for i in {1..30}; do
-            if curl -s http://localhost:8080 > /dev/null; then
-              echo "Keycloak is up"
-              break
-            fi
-            sleep 5
-          done
+          kubectl create ns keycloak || true
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keycloak
+            namespace: keycloak
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: keycloak
+            template:
+              metadata:
+                labels:
+                  app: keycloak
+              spec:
+                containers:
+                  - name: keycloak
+                    image: quay.io/keycloak/keycloak:23.0.4
+                    args: ["start-dev"]
+                    env:
+                      - name: KEYCLOAK_ADMIN
+                        value: admin
+                      - name: KEYCLOAK_ADMIN_PASSWORD
+                        value: admin
+                    ports:
+                      - containerPort: 8080
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keycloak
+            namespace: keycloak
+          spec:
+            selector:
+              app: keycloak
+            ports:
+              - port: 8080
+                targetPort: 8080
+          EOF
+          kubectl -n keycloak rollout status deployment/keycloak --timeout=2m
+ 
 
       # Configure Keycloak realm, client, and user
       - name: Configure Keycloak realm, client, and user
         run: |
-          docker exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
-            --server http://localhost:8080 --realm master \
-            --user admin --password admin
-
-          docker exec keycloak /opt/keycloak/bin/kcadm.sh create realms \
-            -s realm=test -s enabled=true
-
-          docker exec keycloak /opt/keycloak/bin/kcadm.sh create clients -r test \
-            -s clientId=vertica -s enabled=true \
-            -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
-            -s 'redirectUris=["*"]'
-
-          docker exec keycloak /opt/keycloak/bin/kcadm.sh create users -r test \
-            -s username=oauth_user -s enabled=true
-          docker exec keycloak /opt/keycloak/bin/kcadm.sh set-password -r test \
-            --username oauth_user --new-password password
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh config credentials \
+              --server http://localhost:8080 --realm master \
+              --user admin --password admin
+      
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create realms -s realm=test -s enabled=true
+      
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create clients -r test \
+              -s clientId=vertica -s enabled=true \
+              -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
+              -s 'redirectUris=["*"]'
+      
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh create users -r test \
+              -s username=oauth_user -s enabled=true
+      
+          kubectl -n keycloak exec deploy/keycloak -- \
+            /opt/keycloak/bin/kcadm.sh set-password -r test \
+              --username oauth_user --new-password password
+      
 
       # Configure Vertica Authentication
       - name: Configure Vertica Authentication
@@ -278,12 +311,13 @@ jobs:
             done
 
             echo '=== Running OAuth Tests ==='
-            TOKEN=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
+            TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
               -d 'client_id=vertica' -d 'username=oauth_user' -d 'password=password' -d 'grant_type=password' \
               -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' \
-              | sed -n 's/.*\"access_token\":\"\([^\"]*\)\".*/\1/p')
+              | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
 
-            export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
+            export VERTICA_TEST_OAUTH_ACCESS_TOKEN=$TOKEN
+            echo "Token length: ${#VERTICA_TEST_OAUTH_ACCESS_TOKEN}"
             go test -v -race . -args --locator '${LOCATOR}' --user oauth_user
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
@@ -330,4 +364,5 @@ jobs:
           kubectl get svc -n my-verticadb-operator -o wide || true
           kubectl get endpoints -n my-verticadb-operator || true
           kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=500 || true
+          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
           kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
