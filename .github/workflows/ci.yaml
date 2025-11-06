@@ -322,15 +322,24 @@ jobs:
             done
 
             echo '=== Running OAuth Tests ==='
-            curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
+            RAW=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
               -d 'client_id=vertica' \
               -d 'username=oauth_user' \
               -d 'password=password' \
               -d 'grant_type=password' \
-              -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' -o oauth.json
-            
-            cat oauth.json | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj["access_token"])' > access_token.txt
-            export VERTICA_TEST_OAUTH_ACCESS_TOKEN=`cat access_token.txt`
+              -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs')
+
+            echo \"Raw response: \$RAW\"
+
+            TOKEN=\$(echo \"\$RAW\" | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj.get(\"access_token\",\"\"))')
+
+            if [ -z \"\$TOKEN\" ]; then
+              echo 'No access_token in response, failing fast'
+              exit 1
+            fi
+
+            echo \"Token length: \${#TOKEN}\"
+            export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
