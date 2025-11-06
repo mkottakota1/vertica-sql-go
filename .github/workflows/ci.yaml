@@ -332,6 +332,7 @@ jobs:
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
           "
+		  
       # Configuring and Enbaling TLS
       - name: Configure Vertica TLS
         run: |
@@ -350,12 +351,15 @@ jobs:
         run: |
           NS=my-verticadb-operator
           POD=verticadb-sample-defaultsubcluster-0
+		  LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
           kubectl -n ${NS} exec ${POD} -c server -- \
             /opt/vertica/bin/vsql -U dbadmin -c \
             "ALTER TLS CONFIGURATION server ADD CA CERTIFICATES root_ca TLSMODE 'VERIFY_CA';"
+      
           echo '=== Running TLS Tests (server mode) ==='
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
-            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+          go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
+          go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+      
 
       - name: Run Vertica SQL Go TLS custom tests
         run: |
@@ -377,4 +381,3 @@ jobs:
           kubectl delete svc minio -n minio --ignore-not-found || true
           kubectl delete ns minio || true
           echo "MinIO cleanup complete"
-
