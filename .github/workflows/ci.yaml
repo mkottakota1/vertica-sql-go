@@ -184,8 +184,32 @@ jobs:
             sleep 5
           done
 
+      # Configure Keycloak realm, client, and user
+      - name: Configure Keycloak realm, client, and user
+        run: |
+          docker exec keycloak /opt/keycloak/bin/kcadm.sh config credentials \
+            --server http://localhost:8080 --realm master \
+            --user admin --password admin
+
+          # Create realm 'test'
+          docker exec keycloak /opt/keycloak/bin/kcadm.sh create realms \
+            -s realm=test -s enabled=true
+
+          # Create client 'vertica' with matching secret
+          docker exec keycloak /opt/keycloak/bin/kcadm.sh create clients -r test \
+            -s clientId=vertica -s enabled=true \
+            -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
+            -s 'redirectUris=["*"]'
+
+          # Create user 'oauth_user' with password 'password'
+          docker exec keycloak /opt/keycloak/bin/kcadm.sh create users -r test \
+            -s username=oauth_user -s enabled=true
+          docker exec keycloak /opt/keycloak/bin/kcadm.sh set-password -r test \
+            --username oauth_user --new-password password
+
+
       # Configure Vertica Authentication
-      - name: Configure Vertica Authentication
+            - name: Configure Vertica Authentication
         run: |
           NS=my-verticadb-operator
           POD=verticadb-sample-defaultsubcluster-0
@@ -194,8 +218,8 @@ jobs:
               CREATE AUTHENTICATION v_oauth METHOD 'oauth' HOST '0.0.0.0/0';
               ALTER AUTHENTICATION v_oauth SET client_id = 'vertica';
               ALTER AUTHENTICATION v_oauth SET client_secret = 'P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs';
-              ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://localhost:8080/realms/test/.well-known/openid-configuration';
-              ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://localhost:8080/realms/test/protocol/openid-connect/token/introspect';
+              ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/test/.well-known/openid-configuration';
+              ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token/introspect';
               CREATE USER oauth_user;
               GRANT AUTHENTICATION v_oauth TO oauth_user;
               GRANT ALL ON SCHEMA PUBLIC TO oauth_user;
@@ -204,6 +228,7 @@ jobs:
               GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;
             \"
           "
+      # Generating TLS Certs & Inspect the SAN
       - name: Generate TLS certs on runner
         run: ./resources/tests/genCerts.sh
 
@@ -262,7 +287,7 @@ jobs:
               | sed -n 's/.*\"access_token\":\"\([^\"]*\)\".*/\1/p')
 
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
+            go test -v -race . -args --locator '${LOCATOR}' --user oauth_user
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
 
