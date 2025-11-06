@@ -211,30 +211,41 @@ jobs:
           kubectl -n keycloak rollout status deployment/keycloak --timeout=2m
  
 
+      # Wait for Keycloak readiness
+      - name: Wait for Keycloak readiness
+        run: |
+          kubectl -n keycloak rollout status deploy/keycloak --timeout=2m
+          kubectl -n keycloak get pods -o wide
+
       # Configure Keycloak realm, client, and user
       - name: Configure Keycloak realm, client, and user
         run: |
+          # Log in to Keycloak admin CLI inside the pod
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh config credentials \
-              --server http://localhost:8080 --realm master \
+              --server http://keycloak.keycloak.svc.cluster.local:8080 \
+              --realm master \
               --user admin --password admin
-      
+
+          # Create realm 'test'
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh create realms -s realm=test -s enabled=true
-      
+
+          # Create client 'vertica' with fixed secret
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh create clients -r test \
               -s clientId=vertica -s enabled=true \
               -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
               -s 'redirectUris=["*"]'
-      
+
+          # Create user 'oauth_user' with password 'password'
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh create users -r test \
               -s username=oauth_user -s enabled=true
-      
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh set-password -r test \
               --username oauth_user --new-password password
+
       
 
       # Configure Vertica Authentication
