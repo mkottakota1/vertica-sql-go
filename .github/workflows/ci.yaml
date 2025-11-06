@@ -277,21 +277,8 @@ jobs:
         run: |
           openssl x509 -in resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
 
-      - name: Configure Vertica TLS
-        run: |
-          NS=my-verticadb-operator
-          POD=verticadb-sample-defaultsubcluster-0
-          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
-            /opt/vertica/bin/vsql -U dbadmin -c \"
-              CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
-              CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
-              CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
-              ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
-            \"
-          "
-
-      # Run Vertica SQL Go tests (Normal + OAuth + TLS)
-      - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
+      # Run Vertica SQL Go tests
+      - name: Run Vertica SQL Go tests
         run: |
           NS=my-verticadb-operator
           SVC=verticadb-sample-defaultsubcluster
@@ -316,7 +303,7 @@ jobs:
             cd /workspace
             go mod tidy
 
-            echo '=== Running Normal Tests ==='
+            echo '=== Running without TLS ==='
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
             for pkg in \$(go list ./... | grep -v 'github.com/vertica/vertica-sql-go$'); do
               go test -v -race \"\$pkg\"
@@ -344,10 +331,19 @@ jobs:
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
-
-            echo '=== Running TLS Tests (server mode) ==='
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
-            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+          "
+      # Configuring and Enbaling TLS
+      - name: Configure Vertica TLS
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          kubectl -n ${NS} exec ${POD} -c server -- bash -c "
+            /opt/vertica/bin/vsql -U dbadmin -c \"
+              CREATE CA CERTIFICATE root_ca AS '$(cat resources/tests/ssl/rootCA.crt)';
+              CREATE KEY server_key TYPE 'RSA' AS '$(cat resources/tests/ssl/server.key)';
+              CREATE CERTIFICATE server AS '$(cat resources/tests/ssl/server.crt)' KEY server_key;
+              ALTER TLS CONFIGURATION server CERTIFICATE server TLSMODE 'ENABLE';
+            \"
           "
 
       - name: Setting SSLCa in the database
@@ -357,6 +353,9 @@ jobs:
           kubectl -n ${NS} exec ${POD} -c server -- \
             /opt/vertica/bin/vsql -U dbadmin -c \
             "ALTER TLS CONFIGURATION server ADD CA CERTIFICATES root_ca TLSMODE 'VERIFY_CA';"
+          echo '=== Running TLS Tests (server mode) ==='
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
 
       - name: Run Vertica SQL Go TLS custom tests
         run: |
@@ -379,12 +378,3 @@ jobs:
           kubectl delete ns minio || true
           echo "MinIO cleanup complete"
 
-      # Final diagnostics
-      - name: Save final diagnostics
-        if: always()
-        run: |
-          kubectl get pods -n my-verticadb-operator -o wide || true
-          kubectl get svc -n my-verticadb-operator -o wide || true
-          kubectl get endpoints -n my-verticadb-operator || true
-          kubectl logs -n my-verticadb-operator -l control-plane=controller-manager --tail=500 || true
-          kubectl logs verticadb-sample-defaultsubcluster-0 -n my-verticadb-operator --all-containers --tail=500 || true
