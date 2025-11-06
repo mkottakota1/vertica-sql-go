@@ -237,7 +237,7 @@ jobs:
             /opt/keycloak/bin/kcadm.sh create clients -r test \
               -s clientId=vertica -s enabled=true \
               -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
-              -s 'redirectUris=["*"]'
+              -s 'redirectUris=["*"]' \
               -s directAccessGrantsEnabled=true
 
           kubectl -n keycloak exec deploy/keycloak -- \
