@@ -229,65 +229,64 @@ jobs:
       # Configure Keycloak realm, client, and user
       - name: Configure Keycloak realm, client, and user
         run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          SVC=verticadb-sample-defaultsubcluster
+          LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
+      
+          CLIENT_ID=vertica
+          CLIENT_SECRET=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs
+          REALM=test
+          USER=oauth_user
+          PASSWORD=password
+      
+          # Login to Keycloak admin
           kubectl -n keycloak exec deploy/keycloak -- \
             /opt/keycloak/bin/kcadm.sh config credentials \
               --server http://localhost:8080 --realm master \
               --user admin --password admin
-
+      
+          # Create realm
           kubectl -n keycloak exec deploy/keycloak -- \
-            /opt/keycloak/bin/kcadm.sh create realms -s realm=test -s enabled=true
-
+            /opt/keycloak/bin/kcadm.sh create realms -s realm=${REALM} -s enabled=true
+      
+          # Create client
           kubectl -n keycloak exec deploy/keycloak -- \
-            /opt/keycloak/bin/kcadm.sh create clients -r test \
-              -s clientId=vertica -s enabled=true \
-              -s secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs \
+            /opt/keycloak/bin/kcadm.sh create clients -r ${REALM} \
+              -s clientId=${CLIENT_ID} \
+              -s enabled=true \
+              -s secret=${CLIENT_SECRET} \
               -s 'redirectUris=["*"]' \
               -s directAccessGrantsEnabled=true
-
+      
+          # Create user
           kubectl -n keycloak exec deploy/keycloak -- \
-            /opt/keycloak/bin/kcadm.sh create users -r test \
-              -s username=oauth_user -s enabled=true
-
+            /opt/keycloak/bin/kcadm.sh create users -r ${REALM} \
+              -s username=${USER} -s enabled=true
+      
+          # Set user password
           kubectl -n keycloak exec deploy/keycloak -- \
-            /opt/keycloak/bin/kcadm.sh set-password -r test \
-              --username oauth_user --new-password password
-
-      # Configure Vertica Authentication
-      - name: Configure Vertica Authentication
-        run: |
-          NS=my-verticadb-operator
-          POD=verticadb-sample-defaultsubcluster-0
+            /opt/keycloak/bin/kcadm.sh set-password -r ${REALM} \
+              --username ${USER} --new-password ${PASSWORD}
+      
+          # Configure Vertica authentication
           kubectl -n ${NS} exec ${POD} -c server -- bash -c "
             /opt/vertica/bin/vsql -U dbadmin -c \"
               CREATE AUTHENTICATION v_oauth METHOD 'oauth' HOST '0.0.0.0/0';
-              ALTER AUTHENTICATION v_oauth SET client_id = 'vertica';
-              ALTER AUTHENTICATION v_oauth SET client_secret = 'P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs';
-              ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/test/.well-known/openid-configuration';
-              ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token/introspect';
-              CREATE USER oauth_user;
-              GRANT AUTHENTICATION v_oauth TO oauth_user;
-              GRANT ALL ON SCHEMA PUBLIC TO oauth_user;
+              ALTER AUTHENTICATION v_oauth SET client_id = '${CLIENT_ID}';
+              ALTER AUTHENTICATION v_oauth SET client_secret = '${CLIENT_SECRET}';
+              ALTER AUTHENTICATION v_oauth SET discovery_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/${REALM}/.well-known/openid-configuration';
+              ALTER AUTHENTICATION v_oauth SET introspect_url = 'http://keycloak.keycloak.svc.cluster.local:8080/realms/${REALM}/protocol/openid-connect/token/introspect';
+              CREATE USER ${USER};
+              GRANT AUTHENTICATION v_oauth TO ${USER};
+              GRANT ALL ON SCHEMA PUBLIC TO ${USER};
               CREATE AUTHENTICATION v_dbadmin_hash METHOD 'hash' HOST '0.0.0.0/0';
               ALTER AUTHENTICATION v_dbadmin_hash PRIORITY 10000;
               GRANT AUTHENTICATION v_dbadmin_hash TO dbadmin;
             \"
           "
-
-      # Generate TLS certs on runner
-      - name: Generate TLS certs on runner
-        run: ./resources/tests/genCerts.sh
-
-      - name: Inspect server certificate SANs
-        run: |
-          openssl x509 -in resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
-
-      # Run Vertica SQL Go tests
-      - name: Run Vertica SQL Go tests
-        run: |
-          NS=my-verticadb-operator
-          SVC=verticadb-sample-defaultsubcluster
-          LOCATOR="${SVC}.${NS}.svc.cluster.local:5433"
-
+          
+          # Run tests without TLS
           WAIT_TIMEOUT=300
           INTERVAL=5
           deadline=$((SECONDS + WAIT_TIMEOUT))
@@ -296,7 +295,7 @@ jobs:
             [ -n "$addrs" ] && break || sleep ${INTERVAL}
           done
 
-          kubectl -n ${NS} run go-test-runner --image=golang:1.20 --restart=Never -- sleep infinity
+          kubectl -n ${NS} run go-test-runner --image=golang:${{ matrix.go-version }} --restart=Never -- sleep infinity
           kubectl -n ${NS} wait --for=condition=Ready pod/go-test-runner --timeout=120s
 
           kubectl -n ${NS} exec -i go-test-runner -- mkdir -p /workspace
@@ -307,20 +306,15 @@ jobs:
             cd /workspace
             go mod tidy
 
-            echo '=== Running without TLS ==='
-            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
-            go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
-            go test -race ./logger
-
             echo '=== Running OAuth Tests ==='
+            
+            # Retreving OAuth Access Token
             RAW=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
-              -d 'client_id=vertica' \
-              -d 'username=oauth_user' \
-              -d 'password=password' \
+              -d 'client_id='${CLIENT_ID}'' \
+              -d 'username='$(USER)'' \
+              -d 'password=${PASSWORD}' \
               -d 'grant_type=password' \
-              -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs')
-
-            echo \"Raw response: \$RAW\"
+              -d 'client_secret='${CLIENT_SECRET}'')
 
             TOKEN=\$(echo \"\$RAW\" | python3 -c 'import json,sys;obj=json.load(sys.stdin);print(obj.get(\"access_token\",\"\"))')
 
@@ -335,6 +329,14 @@ jobs:
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
           "
+          
+      # Generate TLS certs on runner
+      - name: Generate TLS certs on runner
+        run: ./resources/tests/genCerts.sh
+
+      - name: Inspect server certificate SANs
+        run: |
+          openssl x509 -in resources/tests/ssl/server.crt -noout -text | grep -A1 "Subject Alternative Name"
 
       # Configure and Enable TLS
       - name: Configure Vertica TLS
