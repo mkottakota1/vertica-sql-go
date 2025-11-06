@@ -224,7 +224,6 @@ jobs:
           \"
           "
         
-      # Run Vertica SQL Go tests (Normal + OAuth + TLS)
       - name: Run Vertica SQL Go tests (Normal + OAuth + TLS)
         run: |
           NS=my-verticadb-operator
@@ -257,25 +256,38 @@ jobs:
             done
 
             echo '=== Running OAuth Tests ==='
-           TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
-           -d 'client_id=vertica' -d 'username=oauth_user' -d 'password=password' -d 'grant_type=password' \
-           -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' \
-           | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+            TOKEN=\$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/test/protocol/openid-connect/token \
+              -d 'client_id=vertica' -d 'username=oauth_user' -d 'password=password' -d 'grant_type=password' \
+              -d 'client_secret=P9f8350QQIUhFfK1GF5sMhq4Dm3P6Sbs' \
+              | sed -n 's/.*\"access_token\":\"\([^\"]*\)\".*/\1/p')
 
             export VERTICA_TEST_OAUTH_ACCESS_TOKEN=\$TOKEN
-            go test -v -race . -args --locator '${LOCATOR}'  --user dbadmin
-            go test -race . -args --locator '${LOCATOR}'  --user dbadmin --use_prepared_statements=0
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin
+            go test -race . -args --locator '${LOCATOR}' --user dbadmin --use_prepared_statements=0
             go test -race ./logger
 
             echo '=== Running TLS Tests (server mode) ==='
-            go test -v -race . -args --locator '${LOCATOR}'  --user dbadmin --tlsmode=server
+            go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=server --use_prepared_statements=0
+          "
 
+      - name: Setting SSLCa in the database
+        run: |
+          NS=my-verticadb-operator
+          POD=verticadb-sample-defaultsubcluster-0
+          kubectl -n ${NS} exec ${POD} -c server -- \
+            /opt/vertica/bin/vsql -U dbadmin -c \
+            "ALTER TLS CONFIGURATION server ADD CA CERTIFICATES root_ca TLSMODE 'VERIFY_CA';"
 
+      - name: Run Vertica SQL Go TLS custom tests
+        run: |
+          NS=my-verticadb-operator
+          LOCATOR="verticadb-sample-defaultsubcluster.${NS}.svc.cluster.local:5433"
+          kubectl -n ${NS} exec -i go-test-runner -- bash -c "
+            cd /workspace
             echo '=== Running TLS Tests (custom mode) ==='
             go test -v -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom
             go test -race . -args --locator '${LOCATOR}' --user dbadmin --tlsmode=custom --use_prepared_statements=0
-
           "
 
           kubectl -n ${NS} delete pod go-test-runner --ignore-not-found=true
